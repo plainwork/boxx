@@ -1,7 +1,6 @@
 # boxx
 
-A tiny TUI + CLI for installing and orchestrating dockerized apps on a single host
-using ONCE-style conventions and Kamal-style zero-downtime deploys.
+A tiny TUI + CLI for installing and orchestrating dockerized apps on a single Linux host.
 
 ## Install
 
