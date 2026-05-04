@@ -6,14 +6,16 @@ import (
 	"os"
 	"time"
 
+	"github.com/plainwork/boxx/engine/envfile"
 	"github.com/plainwork/boxx/engine/installer"
 	"github.com/spf13/cobra"
 )
 
 var (
-	installHost string
-	installDB   string
-	installSlug string
+	installHost    string
+	installDB      string
+	installSlug    string
+	installEnvFile string
 )
 
 var installCmd = &cobra.Command{
@@ -43,6 +45,13 @@ Example:
 			DBEngine: installDB,
 			Slug:     installSlug,
 		}
+		if installEnvFile != "" {
+			env, err := envfile.ParseFile(installEnvFile)
+			if err != nil {
+				return fmt.Errorf("--env-file: %w", err)
+			}
+			spec.Env = env
+		}
 		_, err := installer.InstallSingle(ctx, spec, func(step, msg string) {
 			fmt.Fprintf(os.Stdout, "  [%-5s] %s\n", step, msg)
 		})
@@ -54,5 +63,6 @@ func init() {
 	installCmd.Flags().StringVar(&installHost, "host", "", "public hostname for the app (required)")
 	installCmd.Flags().StringVar(&installDB, "db", "", "provision a database: mysql or postgres (optional)")
 	installCmd.Flags().StringVar(&installSlug, "slug", "", "override derived app slug (optional)")
+	installCmd.Flags().StringVar(&installEnvFile, "env-file", "", "path to a .env file to inject into the container (optional)")
 	rootCmd.AddCommand(installCmd)
 }

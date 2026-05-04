@@ -21,8 +21,9 @@ import (
 type SingleSpec struct {
 	Image    string
 	Hostname string
-	DBEngine string // "" | "mysql" | "postgres"
-	Slug     string // optional; derived from Image if empty
+	DBEngine string            // "" | "mysql" | "postgres"
+	Slug     string            // optional; derived from Image if empty
+	Env      map[string]string // optional; extra env vars injected into the container
 }
 
 // Progress is a callback for surfacing step-by-step status to a TUI or CLI.
@@ -80,7 +81,12 @@ func InstallSingle(ctx context.Context, spec SingleSpec, progress Progress) (*st
 	color := "blue"
 	containerName := caddyContainerName(slug, color)
 	env := []string{}
-	// stored env first; auto-managed keys appended after so they always win
+	// spec.Env (from --env-file) is applied first; auto-managed keys win
+	for k, v := range spec.Env {
+		env = append(env, k+"="+v)
+	}
+	// stored env from a previous partial attempt (shouldn't exist for new install,
+	// but handle gracefully)
 	if rec, ok := s.Singles[slug]; ok {
 		for k, v := range rec.Env {
 			env = append(env, k+"="+v)
@@ -127,6 +133,7 @@ func InstallSingle(ctx context.Context, spec SingleSpec, progress Progress) (*st
 		LiveColor: color,
 		DB:        dbRec,
 		Registry:  util.RegistryHost(spec.Image),
+		Env:       spec.Env,
 	}
 	s.Singles[slug] = app
 

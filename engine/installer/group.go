@@ -24,9 +24,10 @@ type GroupSpec struct {
 
 // GroupApp describes one app within a group install.
 type GroupApp struct {
-	Slug  string // optional; derived from Image if empty
-	Image string // required
-	Path  string // required, e.g. "/" or "/admin"
+	Slug  string            // optional; derived from Image if empty
+	Image string            // required
+	Path  string            // required, e.g. "/" or "/admin"
+	Env   map[string]string // optional; extra env vars injected into the container
 }
 
 // InstallGroup runs the install state machine for a group of apps that share
@@ -126,6 +127,11 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 		fullSlug := gslug + "-" + a.Slug
 		container := caddyContainerName(fullSlug, "blue")
 		env := []string{}
+		// spec env (from --env-file) first, then stored env from a prior attempt,
+		// then auto-managed keys last so they always win.
+		for k, v := range a.Env {
+			env = append(env, k+"="+v)
+		}
 		// stored env first; auto-managed keys appended after so they always win
 		if sa, ok := s.Groups[gslug]; ok {
 			for k, v := range sa.Apps[a.Slug].Env {
@@ -171,6 +177,7 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 			Path:      a.Path,
 			LiveColor: "blue",
 			Registry:  util.RegistryHost(a.Image),
+			Env:       a.Env,
 		}
 	}
 
