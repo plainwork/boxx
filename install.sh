@@ -132,4 +132,11 @@ say "Ready. Run \`boxx\` for the TUI or \`boxx install <image> --host <hostname>
 if [ "$OS" = "linux" ]; then
   echo
   info "Tip: if this is a fresh login, run \`newgrp docker\` (or re-login) to use Docker without sudo."
+  echo
+  PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  if [ -n "$PUBLIC_IP" ]; then
+    say "This server's public IP is: \033[1m$PUBLIC_IP\033[0m"
+    info "Point your domain's A record to $PUBLIC_IP, then run:"
+    info "  boxx install <image> --host <yourdomain.com>"
+  fi
 fi

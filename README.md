@@ -13,6 +13,7 @@ starts on reboot, and add your user to the `docker` group. After the script fini
 
 ```sh
 boxx install <image> --host <hostname>   # deploy your first app
+boxx upgrade                             # upgrade boxx to the latest release
 boxx                                     # open the TUI
 ```
 
