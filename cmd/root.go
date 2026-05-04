@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/plainwork/boxx/engine/opslog"
+	"github.com/plainwork/boxx/engine/release"
 	"github.com/plainwork/boxx/tui"
 	"github.com/spf13/cobra"
 )
@@ -24,8 +26,17 @@ var rootCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRun: func(c *cobra.Command, args []string) {
-		// Best-effort: keep only the last 7 days of operational log.
+		// Prune ops log to a rolling 7-day window (best-effort).
 		opslog.Prune(7 * 24 * time.Hour) //nolint:errcheck
+		// Start async refresh of the self-update cache for next invocation.
+		release.RefreshAsync()
+	},
+	PersistentPostRun: func(c *cobra.Command, args []string) {
+		// Print a non-intrusive upgrade notice when a newer version is cached.
+		tag := release.Cached()
+		if release.IsNewer(tag, boxxVersion) {
+			fmt.Fprintf(os.Stderr, "\n  boxx %s available — run `boxx upgrade` to install\n", tag)
+		}
 	},
 	RunE: func(c *cobra.Command, args []string) error {
 		return tui.Run()

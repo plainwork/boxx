@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -15,6 +17,7 @@ import (
 	"github.com/plainwork/boxx/engine/dockerx"
 	"github.com/plainwork/boxx/engine/installer"
 	"github.com/plainwork/boxx/engine/metrics"
+	"github.com/plainwork/boxx/engine/release"
 	"github.com/plainwork/boxx/engine/state"
 )
 
@@ -104,6 +107,7 @@ type model struct {
 	cpuHist        map[string][]float64           // container → CPU% history (reserved for dot-matrix)
 	memHist        map[string][]float64
 	visHist        map[string][]float64
+	boxxLatestTag  string // non-empty when a newer boxx release is available
 }
 
 func initialModel() model {
@@ -132,7 +136,22 @@ func initialModel() model {
 	}
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(tickCmd(), statsCmd(m.rows), hostInfoCmd()) }
+func (m model) Init() tea.Cmd {
+	return tea.Batch(tickCmd(), statsCmd(m.rows), hostInfoCmd(), checkSelfUpdateCmd())
+}
+
+// selfUpdateMsg is sent once at startup with the latest boxx tag (may be "").
+type selfUpdateMsg struct{ tag string }
+
+// checkSelfUpdateCmd reads the local release cache (no network) and kicks off
+// an async refresh so the cache is warm for the next invocation.
+func checkSelfUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		tag := release.Cached()
+		release.RefreshAsync()
+		return selfUpdateMsg{tag: tag}
+	}
+}
 
 type hostInfoMsg struct{ info dockerx.HostInfo }
 
@@ -151,6 +170,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case hostInfoMsg:
 		m.hostInfo = msg.info
+		return m, nil
+
+	case selfUpdateMsg:
+		if release.IsNewer(msg.tag, Version) {
+			m.boxxLatestTag = msg.tag
+		}
 		return m, nil
 
 	case tickMsg:
@@ -667,6 +692,14 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.logSlug = "boxx ops log"
 		m.screen = screenOpsLog
 		return m, startOpsLog()
+	case "U":
+		if m.boxxLatestTag != "" {
+			// Replace this process with `boxx upgrade` — TUI exits cleanly.
+			self, err := os.Executable()
+			if err == nil {
+				syscall.Exec(self, []string{self, "upgrade"}, os.Environ()) //nolint:errcheck
+			}
+		}
 	case "n":
 		m.newAppCursor = 0
 		m.screen = screenNewApp
@@ -691,7 +724,7 @@ func (m model) View() string {
 		return ""
 	}
 
-	title := titleBar("boxx", Version, m.width)
+	title := titleBar("boxx", Version, m.boxxLatestTag, m.width)
 	showActions := m.screen == screenDashboard && m.inGroup && m.innerCursor == 0 &&
 		selectedEntry(m) != nil && selectedEntry(m).groupDB != nil
 	se := selectedEntry(m)
@@ -706,7 +739,7 @@ func (m model) View() string {
 			if se.groupDB != nil { dbOffset = 1 }
 			return m.innerCursor >= dbOffset
 		}()))
-	kb := keyBar(m.width, m.getFlash(), showActions, showInspect, seInspecting, showDetails, showAppActions)
+	kb := keyBar(m.width, m.getFlash(), showActions, showInspect, seInspecting, showDetails, showAppActions, m.boxxLatestTag != "")
 	contentH := m.height - 2
 	if contentH < 1 {
 		contentH = 1

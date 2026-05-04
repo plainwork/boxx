@@ -7,8 +7,12 @@ import (
 )
 
 // titleBar renders a full-width title line: ─────── boxx [v0.1.6] ─────────
-func titleBar(title, version string, width int) string {
+// When latestTag is non-empty it appends an upgrade indicator.
+func titleBar(title, version, latestTag string, width int) string {
 	t := " " + title + " [" + version + "] "
+	if latestTag != "" {
+		t += warnStyle.Render("→ "+latestTag+" available") + " "
+	}
 	tw := lipgloss.Width(t)
 	dashes := width - tw
 	if dashes < 0 {
@@ -21,7 +25,7 @@ func titleBar(title, version string, width int) string {
 }
 
 // keyBar renders the bottom hints line, with optional flash message.
-func keyBar(width int, flash string, showActions bool, showInspect bool, inspecting bool, showDetails bool, showAppActions bool) string {
+func keyBar(width int, flash string, showActions bool, showInspect bool, inspecting bool, showDetails bool, showAppActions bool, showUpgrade bool) string {
 	kv := func(k, v string) string {
 		return keyStyle.Render(k) + " " + mutedStyle.Render(v)
 	}
@@ -32,6 +36,9 @@ func keyBar(width int, flash string, showActions bool, showInspect bool, inspect
 		kv("n", "new"),
 		kv("L", "ops log"),
 		kv("q", "quit"),
+	}
+	if showUpgrade {
+		parts = append(parts, warnStyle.Render("U")+" "+mutedStyle.Render("upgrade"))
 	}
 	if showAppActions {
 		parts = append(parts, kv("a", "actions"))

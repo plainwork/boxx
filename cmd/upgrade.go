@@ -3,7 +3,6 @@ package cmd
 import (
 	"archive/tar"
 	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plainwork/boxx/engine/release"
 	"github.com/spf13/cobra"
 )
-
 const upgradeRepo = "plainwork/boxx"
 
 var upgradeCmd = &cobra.Command{
@@ -35,11 +34,10 @@ func runUpgrade() error {
 
 	// 1. Resolve latest tag from GitHub API
 	fmt.Println("checking for latest release…")
-	tag, err := latestTag(client)
+	tag, err := release.FetchLatest()
 	if err != nil {
 		return fmt.Errorf("could not check for updates: %w", err)
 	}
-
 	current := boxxVersion
 	if tag == current || tag == "v"+strings.TrimPrefix(current, "v") {
 		fmt.Printf("  already up to date (%s)\n", current)
@@ -113,28 +111,6 @@ func runUpgrade() error {
 
 	fmt.Printf("  ✓ upgraded to %s at %s\n", tag, self)
 	return nil
-}
-
-func latestTag(client *http.Client) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", upgradeRepo)
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned HTTP %d", resp.StatusCode)
-	}
-	var payload struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	if payload.TagName == "" {
-		return "", fmt.Errorf("no releases found")
-	}
-	return payload.TagName, nil
 }
 
 func extractBinary(r io.Reader) ([]byte, error) {
