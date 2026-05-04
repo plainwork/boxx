@@ -157,6 +157,8 @@ func Pull(ctx context.Context, image string) error {
 		strings.Contains(out, "authentication required") || strings.Contains(out, "403"):
 		return fmt.Errorf("pull %s: authentication failed — run 'docker login %s' first\n  (%s)",
 			image, registryHost(image), out)
+	case strings.Contains(out, "no matching manifest") || strings.Contains(out, "no match for platform"):
+		return fmt.Errorf("pull %s: no linux/amd64 image — rebuild with --platform linux/amd64\n  (%s)", image, out)
 	case strings.Contains(out, "not found") || strings.Contains(out, "manifest unknown") ||
 		strings.Contains(out, "404"):
 		return fmt.Errorf("pull %s: image not found — check the image name and tag\n  (%s)", image, out)
