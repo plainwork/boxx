@@ -31,6 +31,19 @@ func NetworkEnsure(ctx context.Context, name string) error {
 	return nil
 }
 
+// NetworkConnect attaches container to network. Safe to call when already connected.
+func NetworkConnect(ctx context.Context, network, container string) error {
+	b, err := exec.CommandContext(ctx, "docker", "network", "connect", network, container).CombinedOutput()
+	if err != nil {
+		s := strings.TrimSpace(string(b))
+		if strings.Contains(s, "already exists in network") {
+			return nil
+		}
+		return fmt.Errorf("network connect %s %s: %s", network, container, s)
+	}
+	return nil
+}
+
 // ----- containers -----
 
 // ContainerExists returns true if a container with the given name exists (any state).

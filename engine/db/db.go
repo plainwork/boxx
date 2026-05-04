@@ -74,6 +74,15 @@ func provisionMySQL(ctx context.Context, slug, version string) (*state.DB, error
 		if err != nil {
 			return nil, fmt.Errorf("db container %s already exists but could not read its env: %w", containerName, err)
 		}
+		// Re-attach to boxx_net in case the network was recreated since the
+		// container was first started (e.g. after a previous failed install).
+		// NetworkConnect is idempotent — it ignores "already in network" errors.
+		if err := dockerx.NetworkEnsure(ctx, Network); err != nil {
+			return nil, err
+		}
+		if err := dockerx.NetworkConnect(ctx, Network, containerName); err != nil {
+			return nil, err
+		}
 		rootPw := env["MYSQL_ROOT_PASSWORD"]
 		return &state.DB{
 			Engine:       "mysql",
@@ -152,6 +161,14 @@ func provisionPostgres(ctx context.Context, slug, version string) (*state.DB, er
 		env, err := dockerx.ContainerEnv(ctx, containerName)
 		if err != nil {
 			return nil, fmt.Errorf("db container %s already exists but could not read its env: %w", containerName, err)
+		}
+		// Re-attach to boxx_net in case the network was recreated since the
+		// container was first started (e.g. after a previous failed install).
+		if err := dockerx.NetworkEnsure(ctx, Network); err != nil {
+			return nil, err
+		}
+		if err := dockerx.NetworkConnect(ctx, Network, containerName); err != nil {
+			return nil, err
 		}
 		return &state.DB{
 			Engine:    "postgres",

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/plainwork/boxx/engine/caddy"
@@ -161,15 +162,24 @@ func caddyContainerName(slug, color string) string {
 // curl container until it returns success or the timeout elapses.
 func waitForUp(ctx context.Context, container string, max time.Duration) error {
 	deadline := time.Now().Add(max)
+	probe := mkProbe("curlimages/curl:latest", []string{
+		"-fsS", "-m", "3", "http://" + container + "/up",
+	})
 	for time.Now().Before(deadline) {
 		_, err := dockerx.Exec(ctx, container, "true") // ensure container is still running
 		if err != nil {
+			// Docker is in the restart backoff window — keep polling.
+			// Any other exec failure (exited, dead, no such container) is fatal.
+			if strings.Contains(err.Error(), "is restarting") {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(2 * time.Second):
+				}
+				continue
+			}
 			return fmt.Errorf("container exited: %w", err)
 		}
-		// Use a one-shot curl image attached to the same network.
-		probe := mkProbe("curlimages/curl:latest", []string{
-			"-fsS", "-m", "3", "http://" + container + "/up",
-		})
 		if probeOK(ctx, probe) {
 			return nil
 		}
