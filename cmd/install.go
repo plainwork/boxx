@@ -50,6 +50,9 @@ Example:
 			if err != nil {
 				return fmt.Errorf("--env-file: %w", err)
 			}
+			for k := range managedKeys {
+				delete(env, k)
+			}
 			spec.Env = env
 		}
 		_, err := installer.InstallSingle(ctx, spec, func(step, msg string) {

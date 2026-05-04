@@ -95,6 +95,7 @@ func InstallSingle(ctx context.Context, spec SingleSpec, progress Progress) (*st
 	if dbRec != nil {
 		env = append(env, "DATABASE_URL="+db.URL(dbRec))
 	}
+	env = append(env, "PORT=80") // always enforce boxx contract; overrides any .env value
 	progress("app", "starting "+containerName)
 	if err := dockerx.Run(ctx, dockerx.RunOpts{
 		Name:    containerName,

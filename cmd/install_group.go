@@ -55,6 +55,9 @@ Example:
 				if err != nil {
 					return fmt.Errorf("--env-file: %w", err)
 				}
+				for k := range managedKeys {
+					delete(sharedEnv, k)
+				}
 			}
 			for _, raw := range groupApps {
 				i := strings.LastIndex(raw, "=")

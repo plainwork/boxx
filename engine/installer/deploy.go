@@ -77,6 +77,7 @@ func Deploy(ctx context.Context, spec DeploySpec, progress Progress) error {
 	if p := target.path(); p != "" && p != "/" {
 		env = append(env, "BASE_PATH="+strings.TrimRight(p, "/"))
 	}
+	env = append(env, "PORT=80") // always enforce boxx contract; overrides any .env value
 
 	progress("app", "starting "+newContainer)
 	if err := dockerx.Run(ctx, dockerx.RunOpts{

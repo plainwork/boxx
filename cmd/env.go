@@ -117,6 +117,9 @@ func runEnvPush(c *cobra.Command, args []string) error {
 		return err
 	}
 
+	// strip boxx-managed keys — they're always injected at deploy time
+	stripManagedKeys(edited)
+
 	// save to state
 	if err := applyEnvToState(s, slug, envCmdApp, edited); err != nil {
 		return err
@@ -239,4 +242,14 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// managedKeys are always injected by boxx at deploy time and must not be stored
+// as user-supplied env — doing so would let stale values override boxx's values
+// on future deploys. Defined in config.go.
+
+func stripManagedKeys(env map[string]string) {
+	for k := range managedKeys {
+		delete(env, k)
+	}
 }

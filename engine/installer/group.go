@@ -144,6 +144,7 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 		if a.Path != "" && a.Path != "/" {
 			env = append(env, "BASE_PATH="+strings.TrimRight(a.Path, "/"))
 		}
+		env = append(env, "PORT=80") // always enforce boxx contract; overrides any .env value
 		progress("app", "starting "+container+" at "+a.Path)
 		// Remove any stale container from a previous partial install attempt.
 		if exists, _ := dockerx.ContainerExists(ctx, container); exists {
