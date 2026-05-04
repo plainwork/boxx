@@ -76,10 +76,6 @@ func newInstallWizard(kind wizardKind) installWizard {
 func (w installWizard) Update(msg tea.Msg) (installWizard, tea.Cmd) {
 	if w.running {
 		switch m := msg.(type) {
-		case installResultMsg:
-			w.running = false
-			w.err = m.err
-			w.done = true
 		case installLogMsg:
 			w.logLine = string(m)
 		}
@@ -378,7 +374,6 @@ func dbPicker(idx int) string {
 
 // ---- async install commands ----
 
-type installResultMsg struct{ err error }
 type installLogMsg string
 
 func runInstallSingle(image, host, dbEngine string) tea.Cmd {
@@ -389,8 +384,8 @@ func runInstallSingle(image, host, dbEngine string) tea.Cmd {
 			Image:    image,
 			Hostname: host,
 			DBEngine: dbEngine,
-		}, nil)
-		return installResultMsg{err: err}
+		}, progressSend())
+		return opResultMsg{slug: host, op: "install", err: err}
 	}
 }
 
@@ -402,7 +397,7 @@ func runInstallGroup(host, dbEngine string, apps []installer.GroupApp) tea.Cmd {
 			Hostname: host,
 			DBEngine: dbEngine,
 			Apps:     apps,
-		}, nil)
-		return installResultMsg{err: err}
+		}, progressSend())
+		return opResultMsg{slug: host, op: "install", err: err}
 	}
 }

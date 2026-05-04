@@ -58,7 +58,7 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 		return nil, err
 	}
 	if _, exists := s.Groups[gslug]; exists {
-		return nil, fmt.Errorf("a group with slug %q already exists", gslug)
+		return nil, fmt.Errorf("group %q is already installed — use 'boxx deploy' to update it", gslug)
 	}
 
 	// Validate paths up-front and assign per-app slugs.
@@ -139,6 +139,10 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 			env = append(env, "BASE_PATH="+strings.TrimRight(a.Path, "/"))
 		}
 		progress("app", "starting "+container+" at "+a.Path)
+		// Remove any stale container from a previous partial install attempt.
+		if exists, _ := dockerx.ContainerExists(ctx, container); exists {
+			_ = dockerx.Rm(ctx, container)
+		}
 		if err := dockerx.Run(ctx, dockerx.RunOpts{
 			Name:    container,
 			Image:   a.Image,

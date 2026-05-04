@@ -64,11 +64,41 @@ func provisionMySQL(ctx context.Context, slug, version string) (*state.DB, error
 		// (Bun, node-mysql2) require without SSL. mysql:8.4 removed it.
 		version = "8.0"
 	}
+	containerName := "boxx-db-" + slug
+
+	// Idempotent: if the container is already running (e.g. from a partial previous
+	// install), recover the credentials from its env vars rather than failing.
+	running, _ := dockerx.ContainerRunning(ctx, containerName)
+	if running {
+		env, err := dockerx.ContainerEnv(ctx, containerName)
+		if err != nil {
+			return nil, fmt.Errorf("db container %s already exists but could not read its env: %w", containerName, err)
+		}
+		rootPw := env["MYSQL_ROOT_PASSWORD"]
+		return &state.DB{
+			Engine:       "mysql",
+			Version:      version,
+			Container:    containerName,
+			Database:     env["MYSQL_DATABASE"],
+			Username:     env["MYSQL_USER"],
+			Password:     env["MYSQL_PASSWORD"],
+			RootPassword: rootPw,
+		}, nil
+	}
+
+	// Stopped container with same name? Remove it so we can recreate fresh.
+	exists, _ := dockerx.ContainerExists(ctx, containerName)
+	if exists {
+		if err := dockerx.Rm(ctx, containerName); err != nil {
+			return nil, err
+		}
+	}
+
 	rootPw := util.RandomPassword()
 	d := &state.DB{
 		Engine:       "mysql",
 		Version:      version,
-		Container:    "boxx-db-" + slug,
+		Container:    containerName,
 		Database:     dbName(slug),
 		Username:     "app",
 		Password:     util.RandomPassword(),
@@ -114,10 +144,37 @@ func provisionPostgres(ctx context.Context, slug, version string) (*state.DB, er
 	if version == "" {
 		version = "16"
 	}
+	containerName := "boxx-db-" + slug
+
+	// Idempotent: recover credentials from a running container.
+	running, _ := dockerx.ContainerRunning(ctx, containerName)
+	if running {
+		env, err := dockerx.ContainerEnv(ctx, containerName)
+		if err != nil {
+			return nil, fmt.Errorf("db container %s already exists but could not read its env: %w", containerName, err)
+		}
+		return &state.DB{
+			Engine:    "postgres",
+			Version:   version,
+			Container: containerName,
+			Database:  env["POSTGRES_DB"],
+			Username:  env["POSTGRES_USER"],
+			Password:  env["POSTGRES_PASSWORD"],
+		}, nil
+	}
+
+	// Stopped container with same name? Remove it so we can recreate fresh.
+	exists, _ := dockerx.ContainerExists(ctx, containerName)
+	if exists {
+		if err := dockerx.Rm(ctx, containerName); err != nil {
+			return nil, err
+		}
+	}
+
 	d := &state.DB{
 		Engine:    "postgres",
 		Version:   version,
-		Container: "boxx-db-" + slug,
+		Container: containerName,
 		Database:  dbName(slug),
 		Username:  "app",
 		Password:  util.RandomPassword(),

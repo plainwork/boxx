@@ -107,18 +107,32 @@ var loadingPhrases = []string{
 
 // ---- renderer -----------------------------------------------------------
 
-func renderLoadingModal(frame int, label string, width, height int) string {
+func renderLoadingModal(frame int, label, step string, width, height int) string {
 	phraseIdx := (frame / 30) % len(loadingPhrases) // change every ~2.1s
 	phrase := mutedStyle.Render(loadingPhrases[phraseIdx])
 
 	topLine := mutedStyle.Render(label)
+
+	// step line: shows live progress, or falls back to the rotating phrase
+	var stepLine string
+	if step != "" {
+		// truncate to avoid wrapping
+		r := []rune(step)
+		maxW := loadingCols
+		if len(r) > maxW {
+			r = append(r[:maxW-1], '…')
+		}
+		stepLine = mutedStyle.Render(string(r))
+	} else {
+		stepLine = phrase
+	}
 
 	block := lipgloss.JoinVertical(lipgloss.Center,
 		topLine,
 		"",
 		brailleRow(frame),
 		"",
-		phrase,
+		stepLine,
 	)
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, block,

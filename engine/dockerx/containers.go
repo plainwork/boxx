@@ -146,10 +146,40 @@ func RmVolume(ctx context.Context, name string) error {
 // Pull pulls an image, streaming nothing — caller decides whether to surface progress.
 func Pull(ctx context.Context, image string) error {
 	cmd := exec.CommandContext(ctx, "docker", "pull", image)
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("docker pull %s: %s", image, strings.TrimSpace(string(b)))
+	b, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
 	}
-	return nil
+	out := strings.TrimSpace(string(b))
+	// Classify common failure modes so callers can surface actionable messages.
+	switch {
+	case strings.Contains(out, "unauthorized") || strings.Contains(out, "denied") ||
+		strings.Contains(out, "authentication required") || strings.Contains(out, "403"):
+		return fmt.Errorf("pull %s: authentication failed — run 'docker login %s' first\n  (%s)",
+			image, registryHost(image), out)
+	case strings.Contains(out, "not found") || strings.Contains(out, "manifest unknown") ||
+		strings.Contains(out, "404"):
+		return fmt.Errorf("pull %s: image not found — check the image name and tag\n  (%s)", image, out)
+	case strings.Contains(out, "no such host") || strings.Contains(out, "connection refused") ||
+		strings.Contains(out, "network") || strings.Contains(out, "dial"):
+		return fmt.Errorf("pull %s: network error — check connectivity\n  (%s)", image, out)
+	default:
+		return fmt.Errorf("pull %s: %s", image, out)
+	}
+}
+
+// registryHost extracts the registry hostname from an image reference.
+// "ghcr.io/acme/app:tag" → "ghcr.io", "ubuntu:22.04" → "docker.io"
+func registryHost(image string) string {
+	ref := image
+	if i := strings.Index(ref, "/"); i > 0 {
+		host := ref[:i]
+		// A registry host contains a dot or colon; otherwise it's a Docker Hub user
+		if strings.ContainsAny(host, ".:") {
+			return host
+		}
+	}
+	return "docker.io"
 }
 
 // Exec runs a command inside a running container and returns stdout.

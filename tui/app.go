@@ -17,14 +17,29 @@ import (
 	"github.com/plainwork/boxx/engine/state"
 )
 
+// sendToProgram is set when the TUI starts; install/deploy cmds use it to push
+// progress messages from goroutines into the Bubble Tea event loop.
+var sendToProgram func(tea.Msg)
+
 // Run launches the TUI dashboard.
 func Run() error {
 	p := tea.NewProgram(
 		initialModel(),
 		tea.WithAltScreen(),
 	)
+	sendToProgram = func(msg tea.Msg) { p.Send(msg) }
 	_, err := p.Run()
+	sendToProgram = nil
 	return err
+}
+
+// progressSend returns an installer.Progress that feeds step updates into the TUI.
+func progressSend() installer.Progress {
+	return func(step, msg string) {
+		if sendToProgram != nil {
+			sendToProgram(loadingStepMsg(step + ": " + msg))
+		}
+	}
 }
 
 type screen int
@@ -54,6 +69,7 @@ type model struct {
 	appActionImage  textinput.Model  // text input for change-image action
 	loadingFrame    int              // animation frame counter for loading modal
 	loadingLabel    string           // human label shown while loading
+	loadingStep     string           // current step reported by progress callback
 	loadingStarted  time.Time        // when the current op started
 	pendingOp       *opResultMsg     // op finished but min time not yet elapsed
 	logLines        []string         // accumulated log output lines
@@ -218,8 +234,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch m.screen {
 	case screenWizard:
+		wasRunning := m.wizard.running
 		newW, cmd := m.wizard.Update(msg)
 		m.wizard = newW
+		if newW.running && !wasRunning {
+			// wizard just fired its install command — hand off to the loading screen
+			label := "installing " + newW.host.Value() + "…"
+			return m, m.startOp(label, cmd)
+		}
 		if newW.done && !newW.running {
 			m.screen = screenDashboard
 			m.rows = loadRows()
@@ -238,6 +260,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case loadingTickMsg:
 			m.loadingFrame++
 			return m, tickLoading()
+		case loadingStepMsg:
+			m.loadingStep = string(msg)
 		}
 		return m, nil
 
@@ -595,7 +619,7 @@ func (m model) View() string {
 		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
 		content = renderAppImageModal(dash, m.appActionImage, m.appActionSlug, m.width, contentH)
 	case screenLoading:
-		content = renderLoadingModal(m.loadingFrame, m.loadingLabel, m.width, contentH)
+		content = renderLoadingModal(m.loadingFrame, m.loadingLabel, m.loadingStep, m.width, contentH)
 	case screenLogs:
 		content = renderLogsScreen(m.logLines, m.logSlug, m.logScroll, m.width, contentH)
 	case screenNewApp:
@@ -673,6 +697,7 @@ type opResultMsg struct {
 }
 
 type loadingReadyMsg struct{}
+type loadingStepMsg string // progress update from a running op
 
 func applyOpResult(m model, msg opResultMsg) model {
 	if msg.err != nil {
@@ -682,6 +707,8 @@ func applyOpResult(m model, msg opResultMsg) model {
 	switch msg.op {
 	case "deploy":
 		m.setFlash(okStyle.Render("✓ deployed: ") + msg.slug)
+	case "install":
+		m.setFlash(okStyle.Render("✓ installed: ") + msg.slug)
 	case "restart":
 		m.setFlash(okStyle.Render("✓ restarted: ") + msg.slug)
 	case "remove":
@@ -698,7 +725,7 @@ func deployCmd(slug string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
-		err := installer.Deploy(ctx, installer.DeploySpec{Slug: slug}, nil)
+		err := installer.Deploy(ctx, installer.DeploySpec{Slug: slug}, progressSend())
 		return opResultMsg{slug: slug, op: "deploy", err: err}
 	}
 }
@@ -707,7 +734,7 @@ func deployWithImageCmd(slug, newImage string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
-		err := installer.Deploy(ctx, installer.DeploySpec{Slug: slug, NewImage: newImage}, nil)
+		err := installer.Deploy(ctx, installer.DeploySpec{Slug: slug, NewImage: newImage}, progressSend())
 		return opResultMsg{slug: slug, op: "deploy", err: err}
 	}
 }
@@ -733,6 +760,7 @@ func removeCmd(slug string) tea.Cmd {
 // startOp switches to screenLoading and fires the given command.
 func (m *model) startOp(label string, cmd tea.Cmd) tea.Cmd {
 	m.loadingLabel = label
+	m.loadingStep = ""
 	m.loadingStarted = time.Now()
 	m.loadingFrame = 0
 	m.pendingOp = nil
