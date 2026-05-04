@@ -30,6 +30,7 @@ func keyBar(width int, flash string, showActions bool, showInspect bool, inspect
 		kv("↑/k", "up"),
 		kv("↓/j", "down"),
 		kv("n", "new"),
+		kv("L", "ops log"),
 		kv("q", "quit"),
 	}
 	if showAppActions {

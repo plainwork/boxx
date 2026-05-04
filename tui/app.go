@@ -62,6 +62,7 @@ const (
 	screenLogs
 	screenAppSettings  // per-app update-policy settings
 	screenAppEnvConfig // per-app env view/edit/rollback
+	screenOpsLog       // boxx operational log (boxx.log)
 )
 
 type model struct {
@@ -310,6 +311,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case logDoneMsg:
 			if msg.err == nil || msg.err == io.EOF {
 				m.logLines = append(m.logLines, mutedStyle.Render("── stream ended ──"))
+			} else {
+				m.logLines = append(m.logLines, badStyle.Render("── "+msg.err.Error()+" ──"))
+			}
+		}
+		return m, nil
+
+	case screenOpsLog:
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "esc", "escape":
+				if m.logCmd != nil && m.logCmd.Process != nil {
+					_ = m.logCmd.Process.Kill()
+				}
+				m.logLines = nil
+				m.logCmd = nil
+				m.logReader = nil
+				m.screen = screenDashboard
+			case "k", "up":
+				contentH := m.height - 2
+				maxScroll := len(m.logLines) - contentH
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.logScroll < maxScroll {
+					m.logScroll++
+				}
+			case "j", "down":
+				if m.logScroll > 0 {
+					m.logScroll--
+				}
+			case "G", "g":
+				m.logScroll = 0
+			}
+		case opsLogReadyMsg:
+			m.logLines = msg.initial
+			m.logCmd = msg.cmd
+			m.logReader = msg.reader
+			return m, readOpsLogLine(m.logReader)
+		case opsLogLineMsg:
+			m.logLines = append(m.logLines, string(msg))
+			return m, readOpsLogLine(m.logReader)
+		case opsLogDoneMsg:
+			if msg.err == nil || msg.err == io.EOF {
+				m.logLines = append(m.logLines, mutedStyle.Render("── end of log ──"))
 			} else {
 				m.logLines = append(m.logLines, badStyle.Render("── "+msg.err.Error()+" ──"))
 			}
@@ -615,6 +661,12 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.inGroup {
 			// deploy selected app — TODO
 		}
+	case "L":
+		m.logLines = nil
+		m.logScroll = 0
+		m.logSlug = "boxx ops log"
+		m.screen = screenOpsLog
+		return m, startOpsLog()
 	case "n":
 		m.newAppCursor = 0
 		m.screen = screenNewApp
@@ -691,7 +743,7 @@ func (m model) View() string {
 		content = renderAppImageModal(dash, m.appActionImage, m.appActionSlug, m.width, contentH)
 	case screenLoading:
 		content = renderLoadingModal(m.loadingFrame, m.loadingLabel, m.loadingStep, m.width, contentH)
-	case screenLogs:
+	case screenLogs, screenOpsLog:
 		content = renderLogsScreen(m.logLines, m.logSlug, m.logScroll, m.width, contentH)
 	case screenAppSettings:
 		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
@@ -706,7 +758,7 @@ func (m model) View() string {
 		content = renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
 	}
 
-	if m.screen == screenLogs {
+	if m.screen == screenLogs || m.screen == screenOpsLog {
 		return lipgloss.JoinVertical(lipgloss.Left, title, content, logsKeyBar(m.width, m.logScroll))
 	}
 	if isModal {
