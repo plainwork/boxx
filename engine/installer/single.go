@@ -128,14 +128,19 @@ func InstallSingle(ctx context.Context, spec SingleSpec, progress Progress) (*st
 	}
 
 	// 6. persist state
+	up := state.UpdatePolicy{Mode: state.UpdateModeNotify}
+	if d := dockerx.LocalDigest(ctx, spec.Image); d != "" {
+		up.CurrentDigest = d
+	}
 	app := state.Single{
-		Slug:      slug,
-		Image:     spec.Image,
-		Hostname:  spec.Hostname,
-		LiveColor: color,
-		DB:        dbRec,
-		Registry:  util.RegistryHost(spec.Image),
-		Env:       spec.Env,
+		Slug:         slug,
+		Image:        spec.Image,
+		Hostname:     spec.Hostname,
+		LiveColor:    color,
+		DB:           dbRec,
+		Registry:     util.RegistryHost(spec.Image),
+		Env:          spec.Env,
+		UpdatePolicy: up,
 	}
 	s.Singles[slug] = app
 

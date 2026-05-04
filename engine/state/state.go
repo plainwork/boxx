@@ -20,13 +20,47 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 )
 
 const Version = 1
 
+// UpdateMode controls how boxx reacts to available image updates.
+type UpdateMode string
+
+const (
+	UpdateModeOff    UpdateMode = "off"
+	UpdateModeNotify UpdateMode = "notify"
+	UpdateModeAuto   UpdateMode = "auto"
+)
+
+// Settings holds global boxx behavior knobs.
+type Settings struct {
+	UpdateIntervalHours int `json:"update_interval_hours,omitempty"` // default 12
+	LogRetentionDays    int `json:"log_retention_days,omitempty"`    // default 30
+}
+
+// UpdatePolicy is the per-app update configuration.
+type UpdatePolicy struct {
+	Mode            UpdateMode `json:"mode,omitempty"`              // off|notify|auto; default notify
+	LastCheck       time.Time  `json:"last_check,omitempty"`
+	CurrentDigest   string     `json:"current_digest,omitempty"`    // digest of running image
+	AvailableDigest string     `json:"available_digest,omitempty"` // non-empty = newer digest found
+	LastStatus      string     `json:"last_status,omitempty"`       // ok|update_available|error
+	LastError       string     `json:"last_error,omitempty"`
+}
+
+// EnvBackup is a one-step rollback snapshot of app env vars.
+type EnvBackup struct {
+	Env        map[string]string `json:"env,omitempty"`
+	BackupTime time.Time         `json:"backup_time,omitempty"`
+	Reason     string            `json:"reason,omitempty"` // why backup was made
+}
+
 // State is the full persisted state document.
 type State struct {
 	Version    int                `json:"version"`
+	Settings   Settings           `json:"settings,omitempty"`
 	Proxy      Proxy              `json:"proxy"`
 	Singles    map[string]Single  `json:"singles"`
 	Groups     map[string]Group   `json:"groups"`
@@ -51,13 +85,15 @@ type DB struct {
 
 // Single is an app installed on its own hostname with an optional dedicated DB.
 type Single struct {
-	Slug      string            `json:"slug"`
-	Image     string            `json:"image"`
-	Hostname  string            `json:"hostname"`
-	LiveColor string            `json:"live_color"` // "blue" | "green"
-	DB        *DB               `json:"db,omitempty"`
-	Registry  string            `json:"registry,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
+	Slug         string            `json:"slug"`
+	Image        string            `json:"image"`
+	Hostname     string            `json:"hostname"`
+	LiveColor    string            `json:"live_color"` // "blue" | "green"
+	DB           *DB               `json:"db,omitempty"`
+	Registry     string            `json:"registry,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	UpdatePolicy UpdatePolicy      `json:"update_policy,omitempty"`
+	PrevEnv      *EnvBackup        `json:"prev_env,omitempty"`
 }
 
 // Group is a set of apps that share one hostname (and optionally one DB).
@@ -69,12 +105,14 @@ type Group struct {
 }
 
 type GroupApp struct {
-	Slug      string            `json:"slug"`
-	Image     string            `json:"image"`
-	Path      string            `json:"path"`       // e.g. "/", "/admin"
-	LiveColor string            `json:"live_color"` // "blue" | "green"
-	Registry  string            `json:"registry,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
+	Slug         string            `json:"slug"`
+	Image        string            `json:"image"`
+	Path         string            `json:"path"`       // e.g. "/", "/admin"
+	LiveColor    string            `json:"live_color"` // "blue" | "green"
+	Registry     string            `json:"registry,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	UpdatePolicy UpdatePolicy      `json:"update_policy,omitempty"`
+	PrevEnv      *EnvBackup        `json:"prev_env,omitempty"`
 }
 
 // ---------- paths ----------
@@ -142,6 +180,13 @@ func Load() (*State, error) {
 	if s.Groups == nil {
 		s.Groups = map[string]Group{}
 	}
+	// Populate settings defaults for state files that predate this field.
+	if s.Settings.UpdateIntervalHours == 0 {
+		s.Settings.UpdateIntervalHours = 12
+	}
+	if s.Settings.LogRetentionDays == 0 {
+		s.Settings.LogRetentionDays = 30
+	}
 	return &s, nil
 }
 
@@ -151,6 +196,10 @@ func newDefault() *State {
 		Proxy:   Proxy{Running: false, Image: "caddy:2"},
 		Singles: map[string]Single{},
 		Groups:  map[string]Group{},
+		Settings: Settings{
+			UpdateIntervalHours: 12,
+			LogRetentionDays:    30,
+		},
 	}
 }
 

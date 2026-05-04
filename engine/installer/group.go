@@ -169,13 +169,18 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 			return nil, fmt.Errorf("%s /up never returned 2xx: %w\n--- last logs ---\n%s", a.Slug, err, logs)
 		}
 
+		up := state.UpdatePolicy{Mode: state.UpdateModeNotify}
+		if d := dockerx.LocalDigest(ctx, a.Image); d != "" {
+			up.CurrentDigest = d
+		}
 		apps[a.Slug] = state.GroupApp{
-			Slug:      a.Slug,
-			Image:     a.Image,
-			Path:      a.Path,
-			LiveColor: "blue",
-			Registry:  util.RegistryHost(a.Image),
-			Env:       a.Env,
+			Slug:         a.Slug,
+			Image:        a.Image,
+			Path:         a.Path,
+			LiveColor:    "blue",
+			Registry:     util.RegistryHost(a.Image),
+			Env:          a.Env,
+			UpdatePolicy: up,
 		}
 	}
 

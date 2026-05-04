@@ -3,6 +3,7 @@ package tui
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -59,6 +60,8 @@ const (
 	screenAppModalImage
 	screenLoading
 	screenLogs
+	screenAppSettings  // per-app update-policy settings
+	screenAppEnvConfig // per-app env view/edit/rollback
 )
 
 type model struct {
@@ -83,6 +86,8 @@ type model struct {
 	logCmd          *exec.Cmd        // running docker logs process
 	logSlug         string           // slug whose logs are being shown
 	logScroll       int              // 0 = pinned to newest, >0 = lines scrolled up
+	appSettingsCursor  int    // cursor within per-app settings screen
+	appEnvConfigCursor int    // cursor within per-app env-config screen
 	inspectMap     map[string]bool // per-entry: true = showing component list, false = showing stats
 	detailMap      map[string]bool // per-container: true = show inline stats in group list
 	wizard         installWizard
@@ -359,6 +364,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "restart":
 					slug := m.appActionSlug
 					return m, m.startOp("restarting "+slug+"…", restartCmd(slug))
+				case "settings":
+					m.appSettingsCursor = 0
+					m.screen = screenAppSettings
+					return m, nil
+				case "env-config":
+					m.appEnvConfigCursor = 0
+					m.screen = screenAppEnvConfig
+					return m, nil
 				case "remove":
 					slug := m.appActionSlug
 					return m, m.startOp("removing "+slug+"…", removeCmd(slug))
@@ -409,6 +422,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "k", "up":
 				if m.actionCursor > 0 {
 					m.actionCursor--
+				}
+			}
+		}
+		return m, nil
+
+	case screenAppSettings:
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "escape", "esc", "q":
+				m.screen = screenAppModal
+			case "j", "down":
+				if m.appSettingsCursor < 2 {
+					m.appSettingsCursor++
+				}
+			case "k", "up":
+				if m.appSettingsCursor > 0 {
+					m.appSettingsCursor--
+				}
+			case "enter", " ":
+				// Cycle the update mode for the selected app.
+				applyUpdateModeCycle(m.appActionSlug, m.appSettingsCursor)
+				m.rows = loadRows()
+			}
+		}
+		return m, nil
+
+	case screenAppEnvConfig:
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
+			case "escape", "esc", "q":
+				m.screen = screenAppModal
+			case "j", "down":
+				if m.appEnvConfigCursor < 2 {
+					m.appEnvConfigCursor++
+				}
+			case "k", "up":
+				if m.appEnvConfigCursor > 0 {
+					m.appEnvConfigCursor--
+				}
+			case "enter", " ":
+				switch m.appEnvConfigCursor {
+				case 0: // env push → launch external editor
+					m.screen = screenDashboard
+					m.setFlash("Use: boxx env push " + m.appActionSlug)
+				case 1: // env import hint
+					m.screen = screenDashboard
+					m.setFlash("Use: boxx env import " + m.appActionSlug + " --file <path>")
+				case 2: // rollback
+					slug := m.appActionSlug
+					m.screen = screenDashboard
+					return m, m.startOp("rolling back env for "+slug+"…", envRollbackCmd(slug))
 				}
 			}
 		}
@@ -598,7 +662,8 @@ func (m model) View() string {
 
 	isModal := m.screen == screenModal || m.screen == screenNewApp ||
 		m.screen == screenAppModal || m.screen == screenAppModalImage ||
-		m.screen == screenLoading
+		m.screen == screenLoading || m.screen == screenAppSettings ||
+		m.screen == screenAppEnvConfig
 	if isModal {
 		contentH = m.height - 1
 	}
@@ -628,6 +693,12 @@ func (m model) View() string {
 		content = renderLoadingModal(m.loadingFrame, m.loadingLabel, m.loadingStep, m.width, contentH)
 	case screenLogs:
 		content = renderLogsScreen(m.logLines, m.logSlug, m.logScroll, m.width, contentH)
+	case screenAppSettings:
+		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
+		content = renderAppSettingsModal(dash, m.appActionSlug, m.appSettingsCursor, m.width, contentH)
+	case screenAppEnvConfig:
+		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
+		content = renderAppEnvConfigModal(dash, m.appActionSlug, m.appEnvConfigCursor, m.width, contentH)
 	case screenNewApp:
 		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
 		content = renderNewAppModal(dash, m.newAppCursor, m.width, contentH)
@@ -761,6 +832,89 @@ func removeCmd(slug string) tea.Cmd {
 		err := installer.Remove(ctx, slug, false)
 		return opResultMsg{slug: slug, op: "remove", err: err}
 	}
+}
+
+func envRollbackCmd(slug string) tea.Cmd {
+	return func() tea.Msg {
+		s, err := state.Load()
+		if err != nil {
+			return opResultMsg{slug: slug, op: "env-rollback", err: err}
+		}
+		// Parse slug/app form
+		parts := strings.SplitN(slug, "/", 2)
+		appSlug := ""
+		if len(parts) == 2 {
+			slug = parts[0]
+			appSlug = parts[1]
+		}
+		// Restore PrevEnv
+		var prev *state.EnvBackup
+		if appSlug == "" {
+			app := s.Singles[slug]
+			prev = app.PrevEnv
+			if prev == nil {
+				return opResultMsg{slug: slug, op: "env-rollback", err: fmt.Errorf("no env backup for %s", slug)}
+			}
+			app.PrevEnv = nil
+			app.Env = prev.Env
+			s.Singles[slug] = app
+		} else {
+			grp := s.Groups[slug]
+			app := grp.Apps[appSlug]
+			prev = app.PrevEnv
+			if prev == nil {
+				return opResultMsg{slug: slug, op: "env-rollback", err: fmt.Errorf("no env backup for %s/%s", slug, appSlug)}
+			}
+			app.PrevEnv = nil
+			app.Env = prev.Env
+			grp.Apps[appSlug] = app
+			s.Groups[slug] = grp
+		}
+		if err := state.Save(s); err != nil {
+			return opResultMsg{slug: slug, op: "env-rollback", err: err}
+		}
+		fullSlug := slug
+		if appSlug != "" {
+			fullSlug = slug + "/" + appSlug
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		err = installer.Deploy(ctx, installer.DeploySpec{Slug: fullSlug}, progressSend())
+		return opResultMsg{slug: fullSlug, op: "env-rollback", err: err}
+	}
+}
+
+// applyUpdateModeCycle cycles the update mode for the given app through off→notify→auto.
+// cursor 0 = off, 1 = notify, 2 = auto
+func applyUpdateModeCycle(slug string, cursor int) {
+	modes := []state.UpdateMode{state.UpdateModeOff, state.UpdateModeNotify, state.UpdateModeAuto}
+	if cursor >= len(modes) {
+		return
+	}
+	mode := modes[cursor]
+	s, err := state.Load()
+	if err != nil {
+		return
+	}
+	parts := strings.SplitN(slug, "/", 2)
+	appSlug := ""
+	base := slug
+	if len(parts) == 2 {
+		base = parts[0]
+		appSlug = parts[1]
+	}
+	if appSlug == "" {
+		app := s.Singles[base]
+		app.UpdatePolicy.Mode = mode
+		s.Singles[base] = app
+	} else {
+		grp := s.Groups[base]
+		app := grp.Apps[appSlug]
+		app.UpdatePolicy.Mode = mode
+		grp.Apps[appSlug] = app
+		s.Groups[base] = grp
+	}
+	_ = state.Save(s)
 }
 
 // startOp switches to screenLoading and fires the given command.

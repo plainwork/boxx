@@ -150,11 +150,14 @@ func Deploy(ctx context.Context, spec DeploySpec, progress Progress) error {
 	_ = dockerx.Stop(ctx, oldContainer, 5)
 	_ = dockerx.Rm(ctx, oldContainer)
 
-	// Update image in state if it changed.
+	// Update image tag in state if it changed, and record new deployed digest.
 	if spec.NewImage != "" {
 		target.setImage(s, spec.NewImage)
-		_ = state.Save(s)
 	}
+	if d := dockerx.LocalDigest(ctx, image); d != "" {
+		target.setDigest(s, d)
+	}
+	_ = state.Save(s)
 
 	progress("done", "deployed "+spec.Slug+" → "+newColor)
 	return nil
@@ -272,6 +275,29 @@ func (t *deployTarget) setImage(s *state.State, image string) {
 	g := s.Groups[t.slug]
 	a := g.Apps[t.groupApp]
 	a.Image = image
+	g.Apps[t.groupApp] = a
+	s.Groups[t.slug] = g
+}
+
+// setDigest updates CurrentDigest and clears AvailableDigest (deploy consumed any pending update).
+func (t *deployTarget) setDigest(s *state.State, digest string) {
+	if t.kind == "single" {
+		a := s.Singles[t.slug]
+		a.UpdatePolicy.CurrentDigest = digest
+		a.UpdatePolicy.AvailableDigest = ""
+		if a.UpdatePolicy.LastStatus == "update_available" {
+			a.UpdatePolicy.LastStatus = "ok"
+		}
+		s.Singles[t.slug] = a
+		return
+	}
+	g := s.Groups[t.slug]
+	a := g.Apps[t.groupApp]
+	a.UpdatePolicy.CurrentDigest = digest
+	a.UpdatePolicy.AvailableDigest = ""
+	if a.UpdatePolicy.LastStatus == "update_available" {
+		a.UpdatePolicy.LastStatus = "ok"
+	}
 	g.Apps[t.groupApp] = a
 	s.Groups[t.slug] = g
 }

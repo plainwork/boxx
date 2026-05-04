@@ -26,6 +26,8 @@ var appActions = []appAction{
 	{"change-image", "change image", "Deploy with a different container image"},
 	{"restart", "restart", "Restart the running container"},
 	{"logs", "logs", "Open container log stream (exits with q)"},
+	{"settings", "settings", "Configure update policy and other per-app settings"},
+	{"env-config", "env / config", "View, edit, import or roll back environment variables"},
 	{"remove", "remove", "Stop and remove the app and its resources"},
 }
 
@@ -332,4 +334,131 @@ func renderNewAppModal(content string, cursor int, width, height int) string {
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal,
 		lipgloss.WithWhitespaceChars(" "),
 	)
+}
+
+// ---- per-app Settings modal -------------------------------------------------
+
+type settingsOption struct {
+	mode  string
+	label string
+	desc  string
+}
+
+var settingsOptions = []settingsOption{
+	{"off", "off", "Never check for updates"},
+	{"notify", "notify", "Check and surface new versions; never auto-deploy"},
+	{"auto", "auto", "Automatically deploy when a new image is available"},
+}
+
+func renderAppSettingsModal(content, slug string, cursor, width, height int) string {
+	const modalW = 56
+	innerW := modalW - 2
+
+	title := "─ settings: " + slug + " "
+	topFill := innerW - len([]rune(title))
+	if topFill < 0 {
+		topFill = 0
+	}
+	top := mutedStyle.Render("╭" + title + strings.Repeat("─", topFill) + "╮")
+	bot := mutedStyle.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	bfn := func(s string) string {
+		pad := innerW - lipgloss.Width(s)
+		if pad < 0 {
+			pad = 0
+		}
+		return mutedStyle.Render("│") + s + strings.Repeat(" ", pad) + mutedStyle.Render("│")
+	}
+
+	var rows []string
+	rows = append(rows, top, bfn(""), bfn("  "+mutedStyle.Render("Update policy")), bfn(""))
+
+	for i, opt := range settingsOptions {
+		dot := lipgloss.NewStyle().Foreground(colAccent).Render("○")
+		label := lipgloss.NewStyle().Foreground(colFg).Render(opt.label)
+		if i == cursor {
+			dot = lipgloss.NewStyle().Foreground(colAccent).Render("●")
+			label = lipgloss.NewStyle().Bold(true).Foreground(colFg).Render(opt.label)
+		}
+		rows = append(rows, bfn("  "+dot+" "+label))
+	}
+
+	rows = append(rows, bfn(""))
+	rows = append(rows, mutedStyle.Render("├"+strings.Repeat("─", innerW)+"┤"))
+	desc := settingsOptions[cursor].desc
+	rows = append(rows, bfn("  "+mutedStyle.Render(desc)))
+	rows = append(rows, mutedStyle.Render("├"+strings.Repeat("─", innerW)+"┤"))
+
+	hint := "  " + keyStyle.Render("esc") + mutedStyle.Render(" back") + "   " + keyStyle.Render("↵") + mutedStyle.Render(" apply")
+	hpad := innerW - lipgloss.Width(hint)
+	if hpad < 0 {
+		hpad = 0
+	}
+	rows = append(rows, mutedStyle.Render("│")+hint+strings.Repeat(" ", hpad)+mutedStyle.Render("│"), bot)
+
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center,
+		strings.Join(rows, "\n"), lipgloss.WithWhitespaceChars(" "))
+}
+
+// ---- per-app Env / Config modal ---------------------------------------------
+
+type envConfigOption struct {
+	label string
+	desc  string
+}
+
+var envConfigOptions = []envConfigOption{
+	{"push (editor)", "Open $EDITOR to review and edit env vars"},
+	{"import from file", "Replace env from a .env file (CLI only)"},
+	{"rollback", "Restore the previous env snapshot and redeploy"},
+}
+
+func renderAppEnvConfigModal(content, slug string, cursor, width, height int) string {
+	const modalW = 56
+	innerW := modalW - 2
+
+	title := "─ env / config: " + slug + " "
+	topFill := innerW - len([]rune(title))
+	if topFill < 0 {
+		topFill = 0
+	}
+	top := mutedStyle.Render("╭" + title + strings.Repeat("─", topFill) + "╮")
+	bot := mutedStyle.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	bfn := func(s string) string {
+		pad := innerW - lipgloss.Width(s)
+		if pad < 0 {
+			pad = 0
+		}
+		return mutedStyle.Render("│") + s + strings.Repeat(" ", pad) + mutedStyle.Render("│")
+	}
+
+	var rows []string
+	rows = append(rows, top, bfn(""))
+
+	for i, opt := range envConfigOptions {
+		dot := lipgloss.NewStyle().Foreground(colAccent).Render("○")
+		label := lipgloss.NewStyle().Foreground(colFg).Render(opt.label)
+		if i == cursor {
+			dot = lipgloss.NewStyle().Foreground(colAccent).Render("●")
+			label = lipgloss.NewStyle().Bold(true).Foreground(colFg).Render(opt.label)
+		}
+		rows = append(rows, bfn("  "+dot+" "+label))
+	}
+
+	rows = append(rows, bfn(""))
+	rows = append(rows, mutedStyle.Render("├"+strings.Repeat("─", innerW)+"┤"))
+	desc := envConfigOptions[cursor].desc
+	rows = append(rows, bfn("  "+mutedStyle.Render(desc)))
+	rows = append(rows, mutedStyle.Render("├"+strings.Repeat("─", innerW)+"┤"))
+
+	hint := "  " + keyStyle.Render("esc") + mutedStyle.Render(" back") + "   " + keyStyle.Render("↵") + mutedStyle.Render(" select")
+	hpad := innerW - lipgloss.Width(hint)
+	if hpad < 0 {
+		hpad = 0
+	}
+	rows = append(rows, mutedStyle.Render("│")+hint+strings.Repeat(" ", hpad)+mutedStyle.Render("│"), bot)
+
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center,
+		strings.Join(rows, "\n"), lipgloss.WithWhitespaceChars(" "))
 }

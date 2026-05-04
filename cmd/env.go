@@ -77,8 +77,14 @@ func init() {
 	envShowCmd.Flags().StringVar(&envCmdApp, "app", "", "target app within a group")
 	envPushCmd.Flags().StringVar(&envCmdApp, "app", "", "target app within a group")
 	envPushCmd.Flags().StringVar(&envCmdFile, "file", "", "seed from this .env file before opening editor")
+	envImportCmd.Flags().StringVar(&envCmdApp, "app", "", "target app within a group")
+	envImportCmd.Flags().StringVar(&envCmdFile, "file", "", "path to .env file to import (required)")
+	_ = envImportCmd.MarkFlagRequired("file")
+	envRollbackCmd.Flags().StringVar(&envCmdApp, "app", "", "target app within a group")
 	envCmd.AddCommand(envShowCmd)
 	envCmd.AddCommand(envPushCmd)
+	envCmd.AddCommand(envImportCmd)
+	envCmd.AddCommand(envRollbackCmd)
 	rootCmd.AddCommand(envCmd)
 }
 
@@ -119,6 +125,9 @@ func runEnvPush(c *cobra.Command, args []string) error {
 
 	// strip boxx-managed keys — they're always injected at deploy time
 	stripManagedKeys(edited)
+
+	// backup current env before overwriting
+	backupEnv(s, slug, envCmdApp, "env push")
 
 	// save to state
 	if err := applyEnvToState(s, slug, envCmdApp, edited); err != nil {
@@ -202,6 +211,93 @@ func applyEnvToState(s *state.State, slug, appSlug string, env map[string]string
 	return state.Save(s)
 }
 
+// ---- env import -------------------------------------------------------------
+
+var envImportCmd = &cobra.Command{
+	Use:   "import <slug>",
+	Short: "Replace env vars for an app from a file, then redeploy",
+	Long: `Replace all env vars from a .env file (no editor opens).
+
+For a group app use --app:
+  boxx env import dev --app nurun --file prod.env`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		slug := args[0]
+		s, err := state.Load()
+		if err != nil {
+			return err
+		}
+		parsed, err := envfile.ParseFile(envCmdFile)
+		if err != nil {
+			return fmt.Errorf("--file: %w", err)
+		}
+		stripManagedKeys(parsed)
+		backupEnv(s, slug, envCmdApp, "env import")
+		_, label, err := resolveEnv(s, slug, envCmdApp)
+		if err != nil {
+			return err
+		}
+		if err := applyEnvToState(s, slug, envCmdApp, parsed); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "  [env  ] imported %d var(s) for %s\n", len(parsed), label)
+		slugRef := slug
+		if envCmdApp != "" {
+			slugRef = slug + "/" + envCmdApp
+		}
+		fmt.Fprintf(os.Stdout, "  [deploy] redeploying %s…\n", slugRef)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		return installer.Deploy(ctx, installer.DeploySpec{Slug: slugRef}, func(step, msg string) {
+			fmt.Fprintf(os.Stdout, "  [%-5s] %s\n", step, msg)
+		})
+	},
+}
+
+// ---- env rollback -----------------------------------------------------------
+
+var envRollbackCmd = &cobra.Command{
+	Use:   "rollback <slug>",
+	Short: "Restore the previous env backup and redeploy",
+	Long: `Restore the single previous env snapshot (taken before the last push or import)
+and redeploy the app.
+
+For a group app use --app:
+  boxx env rollback dev --app nurun`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		slug := args[0]
+		s, err := state.Load()
+		if err != nil {
+			return err
+		}
+		prev, label, err := resolvePrevEnv(s, slug, envCmdApp)
+		if err != nil {
+			return err
+		}
+		if prev == nil {
+			return fmt.Errorf("no env backup found for %s — nothing to roll back", label)
+		}
+		fmt.Fprintf(os.Stdout, "  [env  ] rolling back %s to backup from %s (reason: %s)\n",
+			label, prev.BackupTime.Format(time.RFC3339), prev.Reason)
+		// Clear the backup after restoring so it's not applied twice.
+		clearPrevEnv(s, slug, envCmdApp)
+		if err := applyEnvToState(s, slug, envCmdApp, prev.Env); err != nil {
+			return err
+		}
+		slugRef := slug
+		if envCmdApp != "" {
+			slugRef = slug + "/" + envCmdApp
+		}
+		fmt.Fprintf(os.Stdout, "  [deploy] redeploying %s…\n", slugRef)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		return installer.Deploy(ctx, installer.DeploySpec{Slug: slugRef}, func(step, msg string) {
+			fmt.Fprintf(os.Stdout, "  [%-5s] %s\n", step, msg)
+		})
+	},
+}
+
 // openInEditor writes env to a temp file, opens $EDITOR, and returns the parsed result.
 func openInEditor(env map[string]string, label string) (map[string]string, error) {
 	tmp, err := os.CreateTemp("", "boxx-env-*.env")
@@ -252,4 +348,64 @@ func stripManagedKeys(env map[string]string) {
 	for k := range managedKeys {
 		delete(env, k)
 	}
+}
+
+// backupEnv stores a snapshot of the current env as PrevEnv before overwriting.
+func backupEnv(s *state.State, slug, appSlug, reason string) {
+	snap := func(m map[string]string) map[string]string {
+		cp := make(map[string]string, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		return cp
+	}
+	backup := &state.EnvBackup{BackupTime: time.Now().UTC(), Reason: reason}
+	if appSlug == "" {
+		app := s.Singles[slug]
+		backup.Env = snap(app.Env)
+		app.PrevEnv = backup
+		s.Singles[slug] = app
+	} else {
+		grp := s.Groups[slug]
+		app := grp.Apps[appSlug]
+		backup.Env = snap(app.Env)
+		app.PrevEnv = backup
+		grp.Apps[appSlug] = app
+		s.Groups[slug] = grp
+	}
+}
+
+// resolvePrevEnv returns the stored EnvBackup (nil if none) and a human label.
+func resolvePrevEnv(s *state.State, slug, appSlug string) (*state.EnvBackup, string, error) {
+	if appSlug == "" {
+		app, ok := s.Singles[slug]
+		if !ok {
+			return nil, "", fmt.Errorf("no single app %q", slug)
+		}
+		return app.PrevEnv, slug, nil
+	}
+	grp, ok := s.Groups[slug]
+	if !ok {
+		return nil, "", fmt.Errorf("no group %q", slug)
+	}
+	app, ok := grp.Apps[appSlug]
+	if !ok {
+		return nil, "", fmt.Errorf("group %q has no app %q", slug, appSlug)
+	}
+	return app.PrevEnv, slug + "/" + appSlug, nil
+}
+
+// clearPrevEnv removes the stored backup so it cannot be double-applied.
+func clearPrevEnv(s *state.State, slug, appSlug string) {
+	if appSlug == "" {
+		app := s.Singles[slug]
+		app.PrevEnv = nil
+		s.Singles[slug] = app
+		return
+	}
+	grp := s.Groups[slug]
+	app := grp.Apps[appSlug]
+	app.PrevEnv = nil
+	grp.Apps[appSlug] = app
+	s.Groups[slug] = grp
 }
