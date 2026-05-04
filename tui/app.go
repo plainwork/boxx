@@ -17,6 +17,12 @@ import (
 	"github.com/plainwork/boxx/engine/state"
 )
 
+// Version is injected at startup by cmd.SetVersion → tui.SetVersion.
+var Version = "dev"
+
+// SetVersion stores the build-time version for display in the TUI header.
+func SetVersion(v string) { Version = v }
+
 // sendToProgram is set when the TUI starts; install/deploy cmds use it to push
 // progress messages from goroutines into the Bubble Tea event loop.
 var sendToProgram func(tea.Msg)
@@ -569,7 +575,7 @@ func (m model) View() string {
 		return ""
 	}
 
-	title := titleBar("boxx", m.width)
+	title := titleBar("boxx", Version, m.width)
 	showActions := m.screen == screenDashboard && m.inGroup && m.innerCursor == 0 &&
 		selectedEntry(m) != nil && selectedEntry(m).groupDB != nil
 	se := selectedEntry(m)

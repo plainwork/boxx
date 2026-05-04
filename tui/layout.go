@@ -6,9 +6,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// titleBar renders a full-width title line: ─────── boxx ─────────────────
-func titleBar(title string, width int) string {
-	t := " " + title + " "
+// titleBar renders a full-width title line: ─────── boxx [v0.1.6] ─────────
+func titleBar(title, version string, width int) string {
+	t := " " + title + " [" + version + "] "
 	tw := lipgloss.Width(t)
 	dashes := width - tw
 	if dashes < 0 {

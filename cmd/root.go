@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/plainwork/boxx/tui"
 	"github.com/spf13/cobra"
 )
@@ -8,7 +10,10 @@ import (
 var boxxVersion = "dev"
 
 // SetVersion is called from main to inject the build-time version.
-func SetVersion(v string) { boxxVersion = v }
+func SetVersion(v string) {
+	boxxVersion = v
+	tui.SetVersion(v)
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "boxx",
@@ -24,4 +29,14 @@ var rootCmd = &cobra.Command{
 // Execute runs the root command.
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+func init() {
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Print the boxx version",
+		Run: func(c *cobra.Command, args []string) {
+			fmt.Println(boxxVersion)
+		},
+	})
 }
