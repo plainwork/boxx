@@ -45,13 +45,10 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 
 	gslug := spec.Slug
 	if gslug == "" {
-		// Use the first label of the hostname (e.g. "nurun.localhost" → "nurun").
-		// This is far more intuitive than slugifying the full hostname.
-		firstLabel := spec.Hostname
-		if i := strings.IndexByte(firstLabel, '.'); i > 0 {
-			firstLabel = firstLabel[:i]
-		}
-		gslug = util.Slugify(firstLabel)
+		// Slug the full hostname so two groups on the same box that share a
+		// first label (e.g. dev.nurun.co and dev.foo.com) don't collide.
+		// "dev.nurun.co" → "dev-nurun-co"
+		gslug = util.Slugify(spec.Hostname)
 	}
 
 	s, err := state.Load()

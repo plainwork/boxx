@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/plainwork/boxx/engine/envfile"
 	"github.com/plainwork/boxx/engine/installer"
 )
 
@@ -22,15 +23,16 @@ const (
 
 // installWizard drives both single and group install flows.
 //
-// Steps for single: 0 kind, 1 image, 2 host, 3 db, 4 confirm, 5 running.
-// Steps for group : 0 kind, 1 host, 2 db, 3 apps (image+path repeated), 4 confirm, 5 running.
+// Steps for single: 1=image, 2=host, 3=db, 4=env-file, 5=confirm, running.
+// Steps for group : 1=host, 2=db,   3=apps, 4=env-file, 5=confirm, running.
 type installWizard struct {
 	step int
 	kind wizardKind
 
 	// shared inputs
-	image textinput.Model // single only
-	host  textinput.Model
+	image   textinput.Model // single only
+	host    textinput.Model
+	envFile textinput.Model // step 4 for both flows
 
 	// group-only "add app" inputs
 	groupImage textinput.Model
@@ -38,6 +40,10 @@ type installWizard struct {
 	groupApps  []installer.GroupApp
 
 	dbIdx int
+
+	// loaded env (from envFile path)
+	envVars map[string]string
+	envErr  string
 
 	// run state
 	running bool
@@ -62,6 +68,7 @@ func newInstallWizard(kind wizardKind) installWizard {
 		host:       mk("myapp.example.com"),
 		groupImage: mk("ghcr.io/acme/myapp:latest"),
 		groupPath:  mk("/admin"),
+		envFile:    mk("/tmp/myapp.env  (leave blank to skip)"),
 	}
 	w.step = 1
 	switch kind {
@@ -105,6 +112,10 @@ func (w installWizard) Update(msg tea.Msg) (installWizard, tea.Cmd) {
 			return w, cmd
 		case 3:
 			return w.dbKey(msg), nil
+		case 4:
+			var cmd tea.Cmd
+			w.envFile, cmd = w.envFile.Update(msg)
+			return w, cmd
 		}
 	} else {
 		switch w.step {
@@ -142,6 +153,10 @@ func (w installWizard) Update(msg tea.Msg) (installWizard, tea.Cmd) {
 			} else {
 				w.groupPath, cmd = w.groupPath.Update(msg)
 			}
+			return w, cmd
+		case 4:
+			var cmd tea.Cmd
+			w.envFile, cmd = w.envFile.Update(msg)
 			return w, cmd
 		}
 	}
@@ -201,14 +216,23 @@ func (w installWizard) advance() (installWizard, tea.Cmd) {
 			return w, nil
 		case 3:
 			w.step = 4
-			return w, nil
+			w.envFile.Focus()
+			return w, textinput.Blink
 		case 4:
+			nw, ok := w.loadEnvFile()
+			if !ok {
+				return nw, nil
+			}
+			nw.step = 5
+			nw.envFile.Blur()
+			return nw, nil
+		case 5:
 			w.running = true
 			db := dbChoices[w.dbIdx]
 			if db == "none" {
 				db = ""
 			}
-			return w, runInstallSingle(w.image.Value(), w.host.Value(), db)
+			return w, runInstallSingle(w.image.Value(), w.host.Value(), db, w.envVars)
 		}
 	} else {
 		switch w.step {
@@ -233,19 +257,56 @@ func (w installWizard) advance() (installWizard, tea.Cmd) {
 			}
 			if len(w.groupApps) > 0 {
 				w.step = 4
-				return w, nil
+				w.groupImage.Blur()
+				w.groupPath.Blur()
+				w.envFile.Focus()
+				return w, textinput.Blink
 			}
 			return w, nil
 		case 4:
+			nw, ok := w.loadEnvFile()
+			if !ok {
+				return nw, nil
+			}
+			nw.step = 5
+			nw.envFile.Blur()
+			return nw, nil
+		case 5:
 			w.running = true
 			db := dbChoices[w.dbIdx]
 			if db == "none" {
 				db = ""
 			}
-			return w, runInstallGroup(w.host.Value(), db, w.groupApps)
+			apps := make([]installer.GroupApp, len(w.groupApps))
+			for i, a := range w.groupApps {
+				apps[i] = installer.GroupApp{Image: a.Image, Path: a.Path, Env: w.envVars}
+			}
+			return w, runInstallGroup(w.host.Value(), db, apps)
 		}
 	}
 	return w, nil
+}
+
+// loadEnvFile parses the env file path input. Returns updated wizard and whether
+// to proceed (true = advance, false = stay on step showing error).
+func (w installWizard) loadEnvFile() (installWizard, bool) {
+	path := strings.TrimSpace(w.envFile.Value())
+	w.envErr = ""
+	if path == "" {
+		w.envVars = nil
+		return w, true
+	}
+	vars, err := envfile.ParseFile(path)
+	if err != nil {
+		w.envErr = err.Error()
+		return w, false
+	}
+	// strip boxx-managed keys
+	for _, k := range []string{"PORT", "DATABASE_URL", "BASE_PATH"} {
+		delete(vars, k)
+	}
+	w.envVars = vars
+	return w, true
 }
 
 func (w installWizard) View(width int) string {
@@ -291,11 +352,18 @@ func (w installWizard) viewStep() string {
 				dbPicker(w.dbIdx) + "\n\n" +
 				hint("[← →] choose   [enter] next   [esc] cancel")
 		case 4:
+			return w.viewEnvFileStep()
+		case 5:
 			db := dbChoices[w.dbIdx]
+			envLine := ""
+			if w.envVars != nil {
+				envLine = kv("env", fmt.Sprintf("%d var(s) from %s", len(w.envVars), w.envFile.Value()))
+			}
 			return labelStyle.Render("Confirm") + "\n\n" +
 				kv("image", w.image.Value()) +
 				kv("host", w.host.Value()) +
-				kv("db", db) + "\n" +
+				kv("db", db) +
+				envLine + "\n" +
 				btnStyle.Render(" Install ") + "\n\n" +
 				hint("[enter] install   [esc] cancel")
 		}
@@ -326,20 +394,38 @@ func (w installWizard) viewStep() string {
 				inputBox(w.groupPath, w.groupPath.Focused()) + "\n\n" +
 				hint("[tab] switch field   [ctrl+a] add app   [ctrl+d] remove last   [enter] next   [esc] cancel")
 		case 4:
+			return w.viewEnvFileStep()
+		case 5:
 			db := dbChoices[w.dbIdx]
 			rows := ""
 			for i, a := range w.groupApps {
 				rows += fmt.Sprintf("  %d. %s  %s\n", i+1, bodyStyle.Render(a.Path), mutedStyle.Render(a.Image))
 			}
+			envLine := ""
+			if w.envVars != nil {
+				envLine = kv("env", fmt.Sprintf("%d var(s) from %s (shared)", len(w.envVars), w.envFile.Value()))
+			}
 			return labelStyle.Render("Confirm") + "\n\n" +
 				kv("host", w.host.Value()) +
 				kv("db", db) +
+				envLine +
 				labelStyle.Render("apps") + "\n" + rows + "\n" +
 				btnStyle.Render(" Install group ") + "\n\n" +
 				hint("[enter] install   [esc] cancel")
 		}
 	}
 	return ""
+}
+
+func (w installWizard) viewEnvFileStep() string {
+	errLine := ""
+	if w.envErr != "" {
+		errLine = "\n" + badStyle.Render("✗ "+w.envErr)
+	}
+	return labelStyle.Render("Env file") + "\n" +
+		mutedStyle.Render("Path to a .env file on this machine (leave blank to skip)") + "\n\n" +
+		inputBox(w.envFile, true) + errLine + "\n\n" +
+		hint("[enter] next   [esc] cancel")
 }
 
 func kv(k, v string) string {
@@ -376,7 +462,7 @@ func dbPicker(idx int) string {
 
 type installLogMsg string
 
-func runInstallSingle(image, host, dbEngine string) tea.Cmd {
+func runInstallSingle(image, host, dbEngine string, env map[string]string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -384,6 +470,7 @@ func runInstallSingle(image, host, dbEngine string) tea.Cmd {
 			Image:    image,
 			Hostname: host,
 			DBEngine: dbEngine,
+			Env:      env,
 		}, progressSend())
 		return opResultMsg{slug: host, op: "install", err: err}
 	}
