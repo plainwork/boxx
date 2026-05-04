@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/plainwork/boxx/engine/opslog"
 	"github.com/plainwork/boxx/tui"
 	"github.com/spf13/cobra"
 )
@@ -21,6 +23,10 @@ var rootCmd = &cobra.Command{
 	Long:  `boxx is a tiny TUI + CLI that installs and orchestrates dockerized apps on a single host.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	PersistentPreRun: func(c *cobra.Command, args []string) {
+		// Best-effort: keep only the last 7 days of operational log.
+		opslog.Prune(7 * 24 * time.Hour) //nolint:errcheck
+	},
 	RunE: func(c *cobra.Command, args []string) error {
 		return tui.Run()
 	},

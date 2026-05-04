@@ -82,6 +82,50 @@ func Tail(n int) ([]Event, error) {
 	return events, nil
 }
 
+// Prune rewrites the log in-place, keeping only entries whose Time is within
+// maxAge of now. It is safe to call frequently — a no-op when the log is
+// absent or already within limits. Returns nil on success or when no pruning
+// was needed.
+func Prune(maxAge time.Duration) error {
+	path := LogFile()
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("opslog prune: %w", err)
+	}
+
+	cutoff := time.Now().UTC().Add(-maxAge)
+	var kept [][]byte
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var e Event
+		if json.Unmarshal(line, &e) == nil && e.Time.Before(cutoff) {
+			continue // drop old entry
+		}
+		kept = append(kept, append([]byte(nil), line...)) // copy
+	}
+	f.Close()
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("opslog prune scan: %w", err)
+	}
+
+	// Atomically replace the log file.
+	tmp := path + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("opslog prune write: %w", err)
+	}
+	for _, line := range kept {
+		out.Write(line)
+		out.Write([]byte{'\n'})
+	}
+	out.Close()
+	return os.Rename(tmp, path)
+}
+
 // Op is a convenience wrapper for logging a completed operation with timing.
 // Call it with defer: defer opslog.Op("deploy", "myapp", "", start, &err)
 func Op(op, slug, appSlug string, start time.Time, errp *error) {
