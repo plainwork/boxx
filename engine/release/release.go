@@ -45,6 +45,12 @@ func Cached() string {
 	return c.Tag
 }
 
+// ClearCache removes the local update-check cache file.
+// Call this after a successful upgrade so the next invocation sees no notice.
+func ClearCache() {
+	_ = os.Remove(cacheFile())
+}
+
 // RefreshAsync fetches the latest GitHub release tag in a background goroutine
 // and writes it to the local cache. Errors are silently discarded.
 func RefreshAsync() {

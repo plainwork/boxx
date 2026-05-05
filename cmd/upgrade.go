@@ -110,6 +110,7 @@ func runUpgrade() error {
 	}
 
 	fmt.Printf("  ✓ upgraded to %s at %s\n", tag, self)
+	release.ClearCache()
 	return nil
 }
 
