@@ -82,7 +82,7 @@ func IsNewer(latest, current string) bool {
 		return false
 	}
 	if current == "dev" || current == "" {
-		return true
+		return false
 	}
 	l := strings.TrimPrefix(latest, "v")
 	c := strings.TrimPrefix(current, "v")
