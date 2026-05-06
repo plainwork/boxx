@@ -90,8 +90,9 @@ type model struct {
 	logCmd          *exec.Cmd        // running docker logs process
 	logSlug         string           // slug whose logs are being shown
 	logScroll       int              // 0 = pinned to newest, >0 = lines scrolled up
-	appSettingsCursor  int    // cursor within per-app settings screen
-	appEnvConfigCursor int    // cursor within per-app env-config screen
+	appSettingsCursor    int    // cursor within per-app settings screen
+	appSettingsActiveMode string // currently saved update mode for the open app
+	appEnvConfigCursor   int    // cursor within per-app env-config screen
 	inspectMap     map[string]bool // per-entry: true = showing component list, false = showing stats
 	detailMap      map[string]bool // per-container: true = show inline stats in group list
 	wizard         installWizard
@@ -436,7 +437,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					slug := m.appActionSlug
 					return m, m.startOp("restarting "+slug+"…", restartCmd(slug))
 				case "settings":
-					m.appSettingsCursor = 0
+					activeMode := lookupUpdateMode(m.appActionSlug)
+					switch activeMode {
+					case state.UpdateModeOff:
+						m.appSettingsCursor = 0
+					case state.UpdateModeAuto:
+						m.appSettingsCursor = 2
+					default:
+						m.appSettingsCursor = 1
+					}
+					m.appSettingsActiveMode = string(activeMode)
 					m.screen = screenAppSettings
 					return m, nil
 				case "env-config":
@@ -514,6 +524,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter", " ":
 				// Cycle the update mode for the selected app.
 				applyUpdateModeCycle(m.appActionSlug, m.appSettingsCursor)
+				modes := []state.UpdateMode{state.UpdateModeOff, state.UpdateModeNotify, state.UpdateModeAuto}
+				m.appSettingsActiveMode = string(modes[m.appSettingsCursor])
 				m.rows = loadRows()
 			}
 		}
@@ -780,7 +792,7 @@ func (m model) View() string {
 		content = renderLogsScreen(m.logLines, m.logSlug, m.logScroll, m.width, contentH)
 	case screenAppSettings:
 		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
-		content = renderAppSettingsModal(dash, m.appActionSlug, m.appSettingsCursor, m.width, contentH)
+		content = renderAppSettingsModal(dash, m.appActionSlug, m.appSettingsCursor, m.width, contentH, m.appSettingsActiveMode)
 	case screenAppEnvConfig:
 		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
 		content = renderAppEnvConfigModal(dash, m.appActionSlug, m.appEnvConfigCursor, m.width, contentH)
@@ -1035,6 +1047,28 @@ func readLogLine(r *bufio.Reader) tea.Cmd {
 }
 
 // ---- history helpers ───────────────────────────────────────────────────────
+
+// lookupUpdateMode returns the current UpdatePolicy.Mode for a slug.
+func lookupUpdateMode(slug string) state.UpdateMode {
+	s, err := state.Load()
+	if err != nil {
+		return state.UpdateModeNotify
+	}
+	if idx := strings.Index(slug, "/"); idx >= 0 {
+		gSlug := slug[:idx]
+		aSlug := slug[idx+1:]
+		if g, ok := s.Groups[gSlug]; ok {
+			if a, ok := g.Apps[aSlug]; ok {
+				return a.UpdatePolicy.Mode
+			}
+		}
+		return state.UpdateModeNotify
+	}
+	if a, ok := s.Singles[slug]; ok {
+		return a.UpdatePolicy.Mode
+	}
+	return state.UpdateModeNotify
+}
 
 // lookupCurrentImage returns the current image for a slug ("single-slug" or "group-slug/app-slug").
 func lookupCurrentImage(slug string) string {

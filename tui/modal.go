@@ -350,7 +350,7 @@ var settingsOptions = []settingsOption{
 	{"auto", "auto", "Automatically deploy when a new image is available"},
 }
 
-func renderAppSettingsModal(content, slug string, cursor, width, height int) string {
+func renderAppSettingsModal(content, slug string, cursor, width, height int, activeMode string) string {
 	const modalW = 56
 	innerW := modalW - 2
 
@@ -380,7 +380,11 @@ func renderAppSettingsModal(content, slug string, cursor, width, height int) str
 			dot = lipgloss.NewStyle().Foreground(colAccent).Render("●")
 			label = lipgloss.NewStyle().Bold(true).Foreground(colFg).Render(opt.label)
 		}
-		rows = append(rows, bfn("  "+dot+" "+label))
+		row := "  " + dot + " " + label
+		if opt.mode == activeMode {
+			row += " " + mutedStyle.Render("(active)")
+		}
+		rows = append(rows, bfn(row))
 	}
 
 	rows = append(rows, bfn(""))
