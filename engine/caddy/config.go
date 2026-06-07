@@ -41,7 +41,7 @@ func IsLocalHostname(h string) bool {
 // BuildConfig produces the full Caddy JSON config that reflects boxx state.
 //
 // Layout:
-//   - One HTTP server "srv0" listening on :80 and :443
+//   - One HTTPS server "srv0" listening on :443 (Caddy auto-redirects :80 → :443)
 //   - automatic_https enabled (Let's Encrypt)
 //   - One route per single-app hostname (host matcher → reverse_proxy to live container)
 //   - One route per group hostname containing sub-routes per path
@@ -121,7 +121,7 @@ func BuildConfig(s *state.State) map[string]any {
 			"http": map[string]any{
 				"servers": map[string]any{
 					"srv0": map[string]any{
-						"listen":          []string{":80", ":443"},
+						"listen":          []string{":443"},
 						"automatic_https": autoHTTPS,
 						"routes":          routes,
 						"logs": map[string]any{
@@ -206,7 +206,7 @@ func writeInitialConfig() error {
 			"http": map[string]any{
 				"servers": map[string]any{
 					"srv0": map[string]any{
-						"listen": []string{":80", ":443"},
+						"listen": []string{":443"},
 						"routes": []any{},
 					},
 				},

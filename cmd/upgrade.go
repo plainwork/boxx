@@ -3,6 +3,7 @@ package cmd
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/plainwork/boxx/engine/caddy"
 	"github.com/plainwork/boxx/engine/release"
+	"github.com/plainwork/boxx/engine/state"
 	"github.com/spf13/cobra"
 )
 const upgradeRepo = "plainwork/boxx"
@@ -111,6 +114,21 @@ func runUpgrade() error {
 
 	fmt.Printf("  ✓ upgraded to %s at %s\n", tag, self)
 	release.ClearCache()
+
+	// Re-apply Caddy config so any proxy changes in the new binary take effect.
+	fmt.Println("reloading proxy config…")
+	s, err := state.Load()
+	if err != nil {
+		fmt.Printf("  warning: could not load state for proxy reload: %v\n", err)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := caddy.Apply(ctx, s); err != nil {
+		fmt.Printf("  warning: proxy reload failed: %v\n", err)
+	} else {
+		fmt.Println("  ✓ proxy config reloaded")
+	}
 	return nil
 }
 
