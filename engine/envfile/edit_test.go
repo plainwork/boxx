@@ -1,6 +1,8 @@
 package envfile
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -38,4 +40,39 @@ func TestEditor(t *testing.T) {
 			t.Fatal("want an error when no editor is installed")
 		}
 	})
+}
+
+func TestKnownTerminal(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TERMINFO", dir)
+	t.Setenv("TERMINFO_DIRS", "")
+	if err := os.MkdirAll(filepath.Join(dir, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x", "xterm-test"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for term, want := range map[string]bool{
+		"xterm-test":          true,
+		"xterm-no-such-thing": false,
+		"":                    false,
+		"../x/xterm-test":     false,
+	} {
+		if got := KnownTerminal(term); got != want {
+			t.Errorf("KnownTerminal(%q) = %v, want %v", term, got, want)
+		}
+	}
+}
+
+func TestEditCmdTerm(t *testing.T) {
+	t.Setenv("EDITOR", "sh")
+	t.Setenv("TERMINFO", t.TempDir())
+	t.Setenv("TERM", "xterm-no-such-thing")
+	cmd, err := EditCmd("x.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cmd.Env, "TERM="+fallbackTerm) {
+		t.Fatalf("want TERM=%s for an unknown terminal, env ends %v", fallbackTerm, cmd.Env[len(cmd.Env)-1:])
+	}
 }

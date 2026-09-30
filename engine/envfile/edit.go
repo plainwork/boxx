@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -73,5 +74,41 @@ func EditCmd(path string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	return exec.Command(argv[0], append(argv[1:], path)...), nil
+	cmd := exec.Command(argv[0], append(argv[1:], path)...)
+	// Terminals such as Ghostty and kitty send their own TERM over SSH, which
+	// the host often has no terminfo for; nano and vim then refuse to start.
+	if !KnownTerminal(os.Getenv("TERM")) {
+		cmd.Env = append(os.Environ(), "TERM="+fallbackTerm)
+	}
+	return cmd, nil
+}
+
+// fallbackTerm is what editors get when the host doesn't know $TERM. Every
+// modern terminal emulates it.
+const fallbackTerm = "xterm-256color"
+
+// KnownTerminal reports whether this host has a terminfo entry for term, so
+// curses programs like nano and vim can run in it.
+func KnownTerminal(term string) bool {
+	if term == "" || strings.ContainsRune(term, '/') {
+		return false
+	}
+	dirs := []string{os.Getenv("TERMINFO")}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".terminfo"))
+	}
+	dirs = append(dirs, filepath.SplitList(os.Getenv("TERMINFO_DIRS"))...)
+	dirs = append(dirs, "/etc/terminfo", "/lib/terminfo", "/usr/share/terminfo", "/usr/lib/terminfo")
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		// Entries are filed under their first letter (Linux) or its hex code (macOS).
+		for _, sub := range []string{term[:1], fmt.Sprintf("%x", term[0])} {
+			if _, err := os.Stat(filepath.Join(d, sub, term)); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }

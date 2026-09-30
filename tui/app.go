@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -1032,12 +1033,25 @@ func editEnvCmd(ref string) tea.Cmd {
 		os.Remove(path)
 		return fail(err)
 	}
+	// Keep a copy of stderr: an editor that fails to start prints why, and the
+	// TUI repaints over it the moment the editor exits.
+	var stderr bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		if err != nil {
 			err = fmt.Errorf("editor exited with error: %w", err)
+			if line := lastLine(stderr.String()); line != "" {
+				err = fmt.Errorf("%w: %s", err, line)
+			}
 		}
 		return envEditedMsg{ref: ref, path: path, before: env, err: err}
 	})
+}
+
+// lastLine returns the last non-blank line of s, trimmed.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // applyEnvEdit saves the edited env and redeploys, or does nothing when the
