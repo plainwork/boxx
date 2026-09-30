@@ -14,7 +14,8 @@ import (
 type row struct {
 	kind      string // "single" | "group-app"
 	slug      string
-	hostname  string
+	hostname  string   // primary hostname
+	hosts     []string // primary + extra hostnames (may include wildcards)
 	path      string
 	color     string
 	container string // live container name for docker stats
@@ -47,6 +48,7 @@ func loadRows() []row {
 		rows = append(rows, row{
 			kind: "single", slug: a.Slug,
 			hostname: a.Hostname, path: "/",
+			hosts: state.HostNames(a.Hostname, a.Aliases),
 			color: a.LiveColor, container: container,
 			groupDB: a.DB,
 		})
@@ -68,6 +70,7 @@ func loadRows() []row {
 			rows = append(rows, row{
 				kind: "group-app", slug: g.Slug + "/" + a.Slug,
 				hostname: g.Hostname, path: a.Path,
+				hosts: state.HostNames(g.Hostname, g.Aliases),
 				color: a.LiveColor, container: container,
 				groupSlug: g.Slug,
 				groupHost: g.Hostname,
@@ -91,6 +94,7 @@ type dashEntry struct {
 	name      string
 	isGroup   bool
 	hostname  string
+	hosts     []string
 	groupSlug string
 	groupDB   *state.DB
 	apps      []row
@@ -107,14 +111,14 @@ func dashEntries(rows []row) []dashEntry {
 				seen[r.groupSlug] = true
 				out = append(out, dashEntry{
 					name: r.groupSlug, isGroup: true,
-					hostname: r.groupHost, groupSlug: r.groupSlug,
+					hostname: r.groupHost, hosts: r.hosts, groupSlug: r.groupSlug,
 					groupDB: r.groupDB,
 				})
 			}
 			// append app to the last entry (the group we just added or already have)
 			out[len(out)-1].apps = append(out[len(out)-1].apps, r)
 		} else {
-			out = append(out, dashEntry{name: r.slug, hostname: r.hostname, groupDB: r.groupDB})
+			out = append(out, dashEntry{name: r.slug, hostname: r.hostname, hosts: r.hosts, groupDB: r.groupDB})
 		}
 	}
 	return out
@@ -442,12 +446,15 @@ func appListBox(e dashEntry, selected bool, innerCursor int, width int, viewStat
 		circle = lipgloss.NewStyle().Foreground(colAccent).Render("○")
 	}
 
-	// top border label: hostname (groupSlug) for groups, hostname (name) for singles
-	var topName string
+	// top border label: hostname [+N] (groupSlug) for groups, hostname [+N] (name) for singles
+	topName := e.hostname
+	if len(e.hosts) > 1 {
+		topName += fmt.Sprintf(" +%d", len(e.hosts)-1)
+	}
 	if e.isGroup {
-		topName = e.hostname + " (" + e.groupSlug + ")"
+		topName += " (" + e.groupSlug + ")"
 	} else {
-		topName = e.hostname + " (" + e.name + ")"
+		topName += " (" + e.name + ")"
 	}
 	nameRunes := len([]rune(topName))
 	dashCount := width - 5 - nameRunes

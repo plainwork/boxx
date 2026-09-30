@@ -14,6 +14,7 @@ import (
 	"github.com/plainwork/boxx/engine/caddy"
 	"github.com/plainwork/boxx/engine/db"
 	"github.com/plainwork/boxx/engine/dockerx"
+	"github.com/plainwork/boxx/engine/hostnames"
 	"github.com/plainwork/boxx/engine/state"
 	"github.com/plainwork/boxx/engine/util"
 )
@@ -21,7 +22,8 @@ import (
 // SingleSpec is the input for installing a standalone app.
 type SingleSpec struct {
 	Image    string
-	Hostname string
+	Hostname string            // primary hostname
+	Aliases  []state.Host      // optional; extra hostnames, served or redirecting
 	DBEngine string            // "" | "mysql" | "postgres"
 	Slug     string            // optional; derived from Image if empty
 	Env      map[string]string // optional; extra env vars injected into the container
@@ -54,6 +56,10 @@ func InstallSingle(ctx context.Context, spec SingleSpec, progress Progress) (*st
 	}
 	if _, exists := s.Singles[slug]; exists {
 		return nil, fmt.Errorf("an app with slug %q is already installed (use 'boxx deploy' to update)", slug)
+	}
+	spec.Hostname, spec.Aliases, err = PrepareHosts(s, spec.Hostname, spec.Aliases, hostnames.Owner{Slug: slug})
+	if err != nil {
+		return nil, err
 	}
 
 	// 1. proxy + network
@@ -136,6 +142,7 @@ func InstallSingle(ctx context.Context, spec SingleSpec, progress Progress) (*st
 		Slug:         slug,
 		Image:        spec.Image,
 		Hostname:     spec.Hostname,
+		Aliases:      spec.Aliases,
 		LiveColor:    color,
 		DB:           dbRec,
 		Registry:     util.RegistryHost(spec.Image),

@@ -65,6 +65,7 @@ const (
 	screenLogs
 	screenAppSettings  // per-app update-policy settings
 	screenAppEnvConfig // per-app env view/edit/rollback
+	screenAppHosts     // per-app hostnames editor
 	screenOpsLog       // boxx operational log (boxx.log)
 )
 
@@ -93,6 +94,7 @@ type model struct {
 	appSettingsCursor    int    // cursor within per-app settings screen
 	appSettingsActiveMode string // currently saved update mode for the open app
 	appEnvConfigCursor   int    // cursor within per-app env-config screen
+	hosts                hostsScreen // per-app hostnames editor state
 	inspectMap     map[string]bool // per-entry: true = showing component list, false = showing stats
 	detailMap      map[string]bool // per-container: true = show inline stats in group list
 	wizard         installWizard
@@ -235,7 +237,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if r.hostname != "" {
-				vm := metrics.Get(r.hostname)
+				vm := metrics.GetHosts(r.hosts)
 				m.rows[i].visitMetrics = vm
 				m.visMetrics[r.hostname] = vm // persist so attachHistory restores it after loadRows
 				m.visHist[r.hostname] = appendHist(m.visHist[r.hostname], vm.ReqPerMin, 20)
@@ -277,7 +279,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wizard = newW
 		if newW.running && !wasRunning {
 			// wizard just fired its install command — hand off to the loading screen
-			label := "installing " + newW.host.Value() + "…"
+			label := "installing " + newW.primary + "…"
 			return m, m.startOp(label, cmd)
 		}
 		if newW.done && !newW.running {
@@ -453,6 +455,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.appEnvConfigCursor = 0
 					m.screen = screenAppEnvConfig
 					return m, nil
+				case "hostnames":
+					m.hosts = newHostsScreen(m.appActionSlug)
+					m.screen = screenAppHosts
+					return m, nil
 				case "remove":
 					slug := m.appActionSlug
 					return m, m.startOp("removing "+slug+"…", removeCmd(slug))
@@ -530,6 +536,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case screenAppHosts:
+		return m.updateHosts(msg)
 
 	case screenAppEnvConfig:
 		if k, ok := msg.(tea.KeyMsg); ok {
@@ -760,7 +769,7 @@ func (m model) View() string {
 	isModal := m.screen == screenModal || m.screen == screenNewApp ||
 		m.screen == screenAppModal || m.screen == screenAppModalImage ||
 		m.screen == screenLoading || m.screen == screenAppSettings ||
-		m.screen == screenAppEnvConfig
+		m.screen == screenAppEnvConfig || m.screen == screenAppHosts
 	if isModal {
 		contentH = m.height - 1
 	}
@@ -796,6 +805,8 @@ func (m model) View() string {
 	case screenAppEnvConfig:
 		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
 		content = renderAppEnvConfigModal(dash, m.appActionSlug, m.appEnvConfigCursor, m.width, contentH)
+	case screenAppHosts:
+		content = renderAppHostsModal(m.hosts, m.width, contentH)
 	case screenNewApp:
 		dash := renderDashboard(m.rows, m.cursor, m.inGroup, m.innerCursor, m.width, contentH, m.hostInfo, m.containerStats, m.inspectMap, m.detailMap)
 		content = renderNewAppModal(dash, m.newAppCursor, m.width, contentH)

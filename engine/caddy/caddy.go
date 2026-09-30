@@ -3,9 +3,8 @@
 //   - Ensure() makes sure a "boxx-proxy" container is running with our initial
 //     config (Admin API on 127.0.0.1:2019, empty HTTP server on :80/:443).
 //   - Apply(state) builds the full Caddy JSON config from boxx state and POSTs
-//     it to /load — atomic replace, no restart.
-//   - SwapUpstream(slug, newDial) does a targeted PATCH so a deploy can flip
-//     blue/green without re-loading the whole config.
+//     it to /load — atomic replace, no restart. Every change (install, deploy
+//     blue/green flip, hostname edits, remove) goes through Apply.
 //
 // We only ever talk to Caddy via 127.0.0.1:2019; the Admin API is never
 // exposed off-host.
@@ -13,6 +12,8 @@ package caddy
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/plainwork/boxx/engine/dockerx"
@@ -82,6 +83,26 @@ func Ensure(ctx context.Context, image string) error {
 
 	// Wait until the Admin API answers.
 	return waitAdminReady(ctx, 30*time.Second)
+}
+
+// Version returns the Caddy version running in the proxy container, like "v2.11.4".
+func Version(ctx context.Context) (string, error) {
+	out, err := dockerx.Exec(ctx, ProxyContainer, "caddy", "version")
+	if err != nil {
+		return "", err
+	}
+	v, _, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	return v, nil
+}
+
+// SupportsWildcards reports whether a Caddy version understands the on-demand
+// TLS "permission" setting boxx uses for wildcard hostnames (added in v2.8).
+func SupportsWildcards(version string) bool {
+	var major, minor int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(version, "v"), "%d.%d", &major, &minor); err != nil {
+		return false
+	}
+	return major > 2 || major == 2 && minor >= 8
 }
 
 // Status reports whether the proxy container is running.

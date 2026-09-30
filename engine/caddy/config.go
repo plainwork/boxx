@@ -5,9 +5,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
+	"github.com/plainwork/boxx/engine/hostnames"
 	"github.com/plainwork/boxx/engine/state"
 )
 
@@ -38,46 +40,45 @@ func IsLocalHostname(h string) bool {
 	return false
 }
 
+// AskAddr is where the in-container on-demand TLS permission endpoint listens.
+// It is served by Caddy itself and never published outside the container.
+const AskAddr = "127.0.0.1:5555"
+
+// site is one app (single or group) as the proxy sees it.
+type site struct {
+	primary  string
+	aliases  []state.Host
+	handlers []any
+}
+
 // BuildConfig produces the full Caddy JSON config that reflects boxx state.
 //
 // Layout:
 //   - One HTTPS server "srv0" listening on :443 (Caddy auto-redirects :80 → :443)
 //   - automatic_https enabled (Let's Encrypt)
-//   - One route per single-app hostname (host matcher → reverse_proxy to live container)
-//   - One route per group hostname containing sub-routes per path
+//   - One route per app matching its exact hostnames (host matcher →
+//     reverse_proxy to the live container; groups get sub-routes per path)
+//   - One route per wildcard hostname, after all exact routes so an exact
+//     name on one app wins over a wildcard on another
+//   - Redirect aliases get a route that 308s to the app's primary hostname
+//   - A hostname claimed by two apps goes to the first one only (singles
+//     before groups, by slug); `boxx doctor` reports the duplicate
+//   - Public wildcards get certificates on demand, gated by the "ask" server
 //
 // We always emit a complete config so /load is fully idempotent.
 func BuildConfig(s *state.State) map[string]any {
-	routes := []any{}
-	localHosts := []string{}
-	addHost := func(h string) {
-		if IsLocalHostname(h) {
-			localHosts = append(localHosts, h)
-		}
-	}
+	sites := []site{}
 
-	// Singles: one route per hostname → live container on port 80 over boxx_net.
-	singleSlugs := sortedKeys(s.Singles)
-	for _, slug := range singleSlugs {
+	// Singles: live container on port 80 over boxx_net.
+	for _, slug := range sortedKeys(s.Singles) {
 		app := s.Singles[slug]
-		if app.Hostname == "" {
-			continue
-		}
-		addHost(app.Hostname)
 		dial := containerName(slug, app.LiveColor) + ":80"
-		routes = append(routes, hostRoute(app.Hostname, []any{
-			pathHandler("", dial),
-		}))
+		sites = append(sites, site{app.Hostname, app.Aliases, []any{pathHandler("", dial)}})
 	}
 
-	// Groups: one route per hostname; sub-routes per app path, longest-prefix first.
-	groupSlugs := sortedKeys(s.Groups)
-	for _, gslug := range groupSlugs {
+	// Groups: sub-routes per app path, longest-prefix first.
+	for _, gslug := range sortedKeys(s.Groups) {
 		g := s.Groups[gslug]
-		if g.Hostname == "" {
-			continue
-		}
-		addHost(g.Hostname)
 		appSlugs := sortedKeys(g.Apps)
 		// longer paths first so /admin matches before /
 		sort.SliceStable(appSlugs, func(i, j int) bool {
@@ -89,7 +90,59 @@ func BuildConfig(s *state.State) map[string]any {
 			dial := containerName(gslug+"-"+aslug, a.LiveColor) + ":80"
 			handlers = append(handlers, pathHandler(a.Path, dial))
 		}
-		routes = append(routes, hostRoute(g.Hostname, handlers))
+		sites = append(sites, site{g.Hostname, g.Aliases, handlers})
+	}
+
+	routes := []any{}
+	wildRoutes := map[string]map[string]any{}
+	claimed := map[string]bool{}
+	localHosts := []string{}
+	onDemand := []string{}
+	for _, st := range sites {
+		if st.primary == "" {
+			continue
+		}
+		var served, redirects []string
+		all := append([]state.Host{{Name: st.primary}}, st.aliases...)
+		for _, h := range all {
+			if claimed[h.Name] {
+				continue
+			}
+			claimed[h.Name] = true
+			switch {
+			case IsLocalHostname(h.Name):
+				localHosts = append(localHosts, h.Name)
+			case hostnames.IsWildcard(h.Name):
+				onDemand = append(onDemand, h.Name)
+			}
+			handlers := st.handlers
+			if h.Redirect {
+				handlers = []any{redirectHandler(st.primary)}
+			}
+			switch {
+			case hostnames.IsWildcard(h.Name):
+				wildRoutes[h.Name] = hostRoute([]string{h.Name}, handlers)
+			case h.Redirect:
+				redirects = append(redirects, h.Name)
+			default:
+				served = append(served, h.Name)
+			}
+		}
+		if len(served) > 0 {
+			routes = append(routes, hostRoute(served, st.handlers))
+		}
+		if len(redirects) > 0 {
+			routes = append(routes, hostRoute(redirects, []any{redirectHandler(st.primary)}))
+		}
+	}
+
+	// Wildcards after every exact host; more specific (more labels) first.
+	wilds := sortedKeys(wildRoutes)
+	sort.SliceStable(wilds, func(i, j int) bool {
+		return strings.Count(wilds[i], ".") > strings.Count(wilds[j], ".")
+	})
+	for _, w := range wilds {
+		routes = append(routes, wildRoutes[w])
 	}
 
 	// Skip ACME for local-only hostnames (.localhost, .local, .test, IPs, …).
@@ -98,6 +151,24 @@ func BuildConfig(s *state.State) map[string]any {
 	autoHTTPS := map[string]any{"disable": false}
 	if len(localHosts) > 0 {
 		autoHTTPS["skip_certificates"] = localHosts
+	}
+
+	servers := map[string]any{
+		"srv0": map[string]any{
+			"listen":          []string{":443"},
+			"automatic_https": autoHTTPS,
+			"routes":          routes,
+			"logs": map[string]any{
+				"default_logger_name": "access",
+			},
+		},
+	}
+	apps := map[string]any{
+		"http": map[string]any{"servers": servers},
+	}
+	if len(onDemand) > 0 {
+		servers["ask"] = askServer(onDemand)
+		apps["tls"] = onDemandTLS(onDemand)
 	}
 
 	return map[string]any{
@@ -117,17 +188,64 @@ func BuildConfig(s *state.State) map[string]any {
 				},
 			},
 		},
-		"apps": map[string]any{
-			"http": map[string]any{
-				"servers": map[string]any{
-					"srv0": map[string]any{
-						"listen":          []string{":443"},
-						"automatic_https": autoHTTPS,
-						"routes":          routes,
-						"logs": map[string]any{
-							"default_logger_name": "access",
-						},
-					},
+		"apps": apps,
+	}
+}
+
+// onDemandTLS issues certificates for wildcard hostnames one subdomain at a
+// time, on the first TLS handshake, after the ask server approves the name.
+// This avoids wildcard certificates, which need a DNS-provider plugin.
+func onDemandTLS(wildcards []string) map[string]any {
+	return map[string]any{
+		"automation": map[string]any{
+			"on_demand": map[string]any{
+				"permission": map[string]any{
+					"module":   "http",
+					"endpoint": "http://" + AskAddr + "/ask",
+				},
+			},
+			"policies": []any{
+				map[string]any{"subjects": wildcards, "on_demand": true},
+			},
+		},
+	}
+}
+
+// askServer answers Caddy's on-demand permission check: 200 when ?domain=
+// is exactly one label under a configured wildcard, 403 otherwise.
+func askServer(wildcards []string) map[string]any {
+	routes := []any{}
+	for _, w := range wildcards {
+		re := `^[a-z0-9-]+` + regexp.QuoteMeta(hostnames.WildcardSuffix(w)) + `$`
+		routes = append(routes, map[string]any{
+			"match": []any{map[string]any{
+				"vars_regexp": map[string]any{
+					"{http.request.uri.query.domain}": map[string]any{"pattern": re},
+				},
+			}},
+			"handle":   []any{map[string]any{"handler": "static_response", "status_code": 200}},
+			"terminal": true,
+		})
+	}
+	routes = append(routes, map[string]any{
+		"handle": []any{map[string]any{"handler": "static_response", "status_code": 403}},
+	})
+	return map[string]any{
+		"listen":          []string{AskAddr},
+		"automatic_https": map[string]any{"disable": true},
+		"routes":          routes,
+	}
+}
+
+// redirectHandler 308s to the same path on the primary hostname.
+func redirectHandler(primary string) map[string]any {
+	return map[string]any{
+		"handle": []any{
+			map[string]any{
+				"handler":     "static_response",
+				"status_code": 308,
+				"headers": map[string]any{
+					"Location": []string{"{http.request.scheme}://" + primary + "{http.request.uri}"},
 				},
 			},
 		},
@@ -135,10 +253,10 @@ func BuildConfig(s *state.State) map[string]any {
 }
 
 // hostRoute wraps a list of handlers in a host matcher.
-func hostRoute(host string, handlers []any) map[string]any {
+func hostRoute(hosts []string, handlers []any) map[string]any {
 	return map[string]any{
 		"match": []any{
-			map[string]any{"host": []string{host}},
+			map[string]any{"host": hosts},
 		},
 		"handle": []any{
 			map[string]any{

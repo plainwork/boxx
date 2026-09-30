@@ -28,6 +28,7 @@ var appActions = []appAction{
 	{"logs", "logs", "Open container log stream (exits with q)"},
 	{"settings", "settings", "Configure update policy and other per-app settings"},
 	{"env-config", "env / config", "View, edit, import or roll back environment variables"},
+	{"hostnames", "hostnames", "Add, remove or redirect this app's domains"},
 	{"remove", "remove", "Stop and remove the app and its resources"},
 }
 

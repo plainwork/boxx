@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/plainwork/boxx/engine/hostnames"
 	"github.com/plainwork/boxx/engine/state"
 )
 
@@ -96,6 +97,24 @@ func Get(hostname string) AppMetrics {
 		Visits:    global.visits[hostname],
 		ReqPerMin: float64(len(global.window[hostname])),
 	}
+}
+
+// GetHosts sums the metrics of every request host matched by any of the
+// given hostnames, which may include wildcards.
+func GetHosts(patterns []string) AppMetrics {
+	global.mu.RLock()
+	defer global.mu.RUnlock()
+	var m AppMetrics
+	for host, n := range global.visits {
+		for _, p := range patterns {
+			if hostnames.Match(p, host) {
+				m.Visits += n
+				m.ReqPerMin += float64(len(global.window[host]))
+				break
+			}
+		}
+	}
+	return m
 }
 
 // FmtBytes formats a byte count as a compact human-readable string.

@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/plainwork/boxx/engine/bootstrap"
+	"github.com/plainwork/boxx/engine/caddy"
 	"github.com/plainwork/boxx/engine/dockerx"
+	"github.com/plainwork/boxx/engine/hostnames"
 	"github.com/plainwork/boxx/engine/state"
 	"github.com/spf13/cobra"
 )
@@ -54,8 +58,51 @@ var doctorCmd = &cobra.Command{
 			printf("Memory:       %s total\n", human(mem))
 		}
 
+		if s, err := state.Load(); err == nil {
+			checkHostnames(ctx, s)
+		}
+
 		return nil
 	},
+}
+
+// checkHostnames reports hostnames claimed by more than one app, and whether
+// the proxy's Caddy is new enough for wildcard hostnames.
+func checkHostnames(ctx context.Context, s *state.State) {
+	dups := hostnames.Duplicates(s)
+	if len(dups) == 0 {
+		printOK("Hostnames:    no duplicates")
+	}
+	hs := keys(dups)
+	sort.Strings(hs)
+	for _, h := range hs {
+		names := []string{}
+		for _, o := range dups[h] {
+			names = append(names, o.String())
+		}
+		printBad("Hostnames:    %s is claimed by %s; only %s receives traffic", h, strings.Join(names, " and "), dups[h][0])
+		printf("              Run: boxx host rm <app> %s   on the app that shouldn't have it\n", h)
+	}
+
+	wildcard := false
+	for h := range hostnames.Owners(s) {
+		if hostnames.IsWildcard(h) && !caddy.IsLocalHostname(h) {
+			wildcard = true
+		}
+	}
+	if !wildcard {
+		return
+	}
+	v, err := caddy.Version(ctx)
+	switch {
+	case err != nil:
+		printBad("Caddy:        could not read version (%v)", err)
+	case caddy.SupportsWildcards(v):
+		printOK("Caddy:        %s (wildcard hostnames supported)", v)
+	default:
+		printBad("Caddy:        %s is too old for wildcard hostnames (needs v2.8+)", v)
+		printf("              Run: docker pull caddy:2 && docker rm -f %s && boxx proxy start\n", caddy.ProxyContainer)
+	}
 }
 
 func init() {

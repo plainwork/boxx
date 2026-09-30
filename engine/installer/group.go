@@ -10,16 +10,18 @@ import (
 	"github.com/plainwork/boxx/engine/caddy"
 	"github.com/plainwork/boxx/engine/db"
 	"github.com/plainwork/boxx/engine/dockerx"
+	"github.com/plainwork/boxx/engine/hostnames"
 	"github.com/plainwork/boxx/engine/state"
 	"github.com/plainwork/boxx/engine/util"
 )
 
 // GroupSpec is the input for installing a group of apps behind one hostname.
 type GroupSpec struct {
-	Slug     string     // optional; derived from Hostname if empty
-	Hostname string     // required
-	DBEngine string     // "" | "mysql" | "postgres" — provisioned once, shared by all apps
-	Apps     []GroupApp // required, len >= 1
+	Slug     string       // optional; derived from Hostname if empty
+	Hostname string       // required; primary hostname
+	Aliases  []state.Host // optional; extra hostnames, served or redirecting
+	DBEngine string       // "" | "mysql" | "postgres" — provisioned once, shared by all apps
+	Apps     []GroupApp   // required, len >= 1
 }
 
 // GroupApp describes one app within a group install.
@@ -57,6 +59,10 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 	}
 	if _, exists := s.Groups[gslug]; exists {
 		return nil, fmt.Errorf("group %q is already installed — use 'boxx deploy' to update it", gslug)
+	}
+	spec.Hostname, spec.Aliases, err = PrepareHosts(s, spec.Hostname, spec.Aliases, hostnames.Owner{Group: true, Slug: gslug})
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate paths up-front and assign per-app slugs.
@@ -188,6 +194,7 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 	g := state.Group{
 		Slug:     gslug,
 		Hostname: spec.Hostname,
+		Aliases:  spec.Aliases,
 		DB:       dbRec,
 		Apps:     apps,
 	}

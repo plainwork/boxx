@@ -32,7 +32,7 @@ var lsCmd = &cobra.Command{
 		for _, k := range ssl {
 			a := s.Singles[k]
 			fmt.Fprintf(w, "single\t%s\t%s\t/\t%s\t%s\t%s\n",
-				a.Slug, a.Hostname, a.Image, a.LiveColor, dbLabel(a.DB))
+				a.Slug, hostLabel(a.Hostname, a.Aliases), a.Image, a.LiveColor, dbLabel(a.DB))
 		}
 
 		gks := keys(s.Groups)
@@ -44,11 +44,19 @@ var lsCmd = &cobra.Command{
 			for _, ak := range aks {
 				a := g.Apps[ak]
 				fmt.Fprintf(w, "group\t%s/%s\t%s\t%s\t%s\t%s\t%s\n",
-					g.Slug, a.Slug, g.Hostname, a.Path, a.Image, a.LiveColor, dbLabel(g.DB))
+					g.Slug, a.Slug, hostLabel(g.Hostname, g.Aliases), a.Path, a.Image, a.LiveColor, dbLabel(g.DB))
 			}
 		}
 		return w.Flush()
 	},
+}
+
+// hostLabel shows the primary hostname and how many extra hostnames there are.
+func hostLabel(primary string, aliases []state.Host) string {
+	if len(aliases) == 0 {
+		return primary
+	}
+	return fmt.Sprintf("%s (+%d)", primary, len(aliases))
 }
 
 func dbLabel(d *state.DB) string {

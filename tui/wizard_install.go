@@ -10,7 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/plainwork/boxx/engine/envfile"
+	"github.com/plainwork/boxx/engine/hostnames"
 	"github.com/plainwork/boxx/engine/installer"
+	"github.com/plainwork/boxx/engine/state"
+	"github.com/plainwork/boxx/engine/util"
 )
 
 // wizardKind selects the install flow.
@@ -41,6 +44,11 @@ type installWizard struct {
 
 	dbIdx int
 
+	// parsed from the host input: first is primary, the rest serve too
+	primary string
+	aliases []state.Host
+	hostErr string
+
 	// loaded env (from envFile path)
 	envVars map[string]string
 	envErr  string
@@ -65,7 +73,7 @@ func newInstallWizard(kind wizardKind) installWizard {
 	w := installWizard{
 		kind:       kind,
 		image:      mk("ghcr.io/acme/myapp:latest"),
-		host:       mk("myapp.example.com"),
+		host:       mk("myapp.example.com, www.myapp.example.com"),
 		groupImage: mk("ghcr.io/acme/myapp:latest"),
 		groupPath:  mk("/admin"),
 		envFile:    mk("/tmp/myapp.env  (leave blank to skip)"),
@@ -208,12 +216,13 @@ func (w installWizard) advance() (installWizard, tea.Cmd) {
 			w.host.Focus()
 			return w, textinput.Blink
 		case 2:
-			if strings.TrimSpace(w.host.Value()) == "" {
-				return w, nil
+			nw, ok := w.checkHosts()
+			if !ok {
+				return nw, nil
 			}
-			w.step = 3
-			w.host.Blur()
-			return w, nil
+			nw.step = 3
+			nw.host.Blur()
+			return nw, nil
 		case 3:
 			w.step = 4
 			w.envFile.Focus()
@@ -232,17 +241,18 @@ func (w installWizard) advance() (installWizard, tea.Cmd) {
 			if db == "none" {
 				db = ""
 			}
-			return w, runInstallSingle(w.image.Value(), w.host.Value(), db, w.envVars)
+			return w, runInstallSingle(w.image.Value(), w.primary, w.aliases, db, w.envVars)
 		}
 	} else {
 		switch w.step {
 		case 1:
-			if strings.TrimSpace(w.host.Value()) == "" {
-				return w, nil
+			nw, ok := w.checkHosts()
+			if !ok {
+				return nw, nil
 			}
-			w.step = 2
-			w.host.Blur()
-			return w, nil
+			nw.step = 2
+			nw.host.Blur()
+			return nw, nil
 		case 2:
 			w.step = 3
 			w.groupImage.Focus()
@@ -281,10 +291,40 @@ func (w installWizard) advance() (installWizard, tea.Cmd) {
 			for i, a := range w.groupApps {
 				apps[i] = installer.GroupApp{Image: a.Image, Path: a.Path, Env: w.envVars}
 			}
-			return w, runInstallGroup(w.host.Value(), db, apps)
+			return w, runInstallGroup(w.primary, w.aliases, db, apps)
 		}
 	}
 	return w, nil
+}
+
+// checkHosts parses the host input ("example.com, *.example.com") into a
+// primary hostname and extra hostnames, validating them and checking no
+// other app already uses them. Returns whether to proceed.
+func (w installWizard) checkHosts() (installWizard, bool) {
+	w.hostErr = ""
+	fields := strings.FieldsFunc(w.host.Value(), func(r rune) bool { return r == ',' || r == ' ' })
+	if len(fields) == 0 {
+		return w, false
+	}
+	aliases := []state.Host{}
+	for _, f := range fields[1:] {
+		aliases = append(aliases, state.Host{Name: f})
+	}
+	s, err := state.Load()
+	if err != nil {
+		w.hostErr = err.Error()
+		return w, false
+	}
+	self := hostnames.Owner{Slug: util.Slugify(w.image.Value())}
+	if w.kind == kindGroup {
+		self = hostnames.Owner{Group: true, Slug: util.Slugify(fields[0])}
+	}
+	w.primary, w.aliases, err = installer.PrepareHosts(s, fields[0], aliases, self)
+	if err != nil {
+		w.hostErr = err.Error()
+		return w, false
+	}
+	return w, true
 }
 
 // loadEnvFile parses the env file path input. Returns updated wizard and whether
@@ -344,9 +384,7 @@ func (w installWizard) viewStep() string {
 				inputBox(w.image, true) + "\n\n" +
 				hint("[enter] next   [esc] cancel")
 		case 2:
-			return labelStyle.Render("Public hostname") + "\n" +
-				inputBox(w.host, true) + "\n\n" +
-				hint("[enter] next   [esc] cancel")
+			return w.viewHostStep("Public hostnames")
 		case 3:
 			return labelStyle.Render("Database") + "\n\n" +
 				dbPicker(w.dbIdx) + "\n\n" +
@@ -361,7 +399,7 @@ func (w installWizard) viewStep() string {
 			}
 			return labelStyle.Render("Confirm") + "\n\n" +
 				kv("image", w.image.Value()) +
-				kv("host", w.host.Value()) +
+				w.hostKV() +
 				kv("db", db) +
 				envLine + "\n" +
 				btnStyle.Render(" Install ") + "\n\n" +
@@ -370,9 +408,7 @@ func (w installWizard) viewStep() string {
 	} else {
 		switch w.step {
 		case 1:
-			return labelStyle.Render("Public hostname (shared)") + "\n" +
-				inputBox(w.host, true) + "\n\n" +
-				hint("[enter] next   [esc] cancel")
+			return w.viewHostStep("Public hostnames (shared)")
 		case 2:
 			return labelStyle.Render("Shared database") + "\n\n" +
 				dbPicker(w.dbIdx) + "\n\n" +
@@ -406,7 +442,7 @@ func (w installWizard) viewStep() string {
 				envLine = kv("env", fmt.Sprintf("%d var(s) from %s (shared)", len(w.envVars), w.envFile.Value()))
 			}
 			return labelStyle.Render("Confirm") + "\n\n" +
-				kv("host", w.host.Value()) +
+				w.hostKV() +
 				kv("db", db) +
 				envLine +
 				labelStyle.Render("apps") + "\n" + rows + "\n" +
@@ -415,6 +451,26 @@ func (w installWizard) viewStep() string {
 		}
 	}
 	return ""
+}
+
+func (w installWizard) viewHostStep(label string) string {
+	errLine := ""
+	if w.hostErr != "" {
+		errLine = "\n" + badStyle.Render("✗ "+w.hostErr)
+	}
+	return labelStyle.Render(label) + "\n" +
+		mutedStyle.Render("First is primary; separate with commas. *.example.com = every subdomain.") + "\n\n" +
+		inputBox(w.host, true) + errLine + "\n\n" +
+		hint("[enter] next   [esc] cancel")
+}
+
+// hostKV renders the confirm-screen hostname lines.
+func (w installWizard) hostKV() string {
+	out := kv("host", w.primary)
+	if len(w.aliases) > 0 {
+		out += kv("also", strings.Join(state.HostNames("", w.aliases), ", "))
+	}
+	return out
 }
 
 func (w installWizard) viewEnvFileStep() string {
@@ -462,13 +518,14 @@ func dbPicker(idx int) string {
 
 type installLogMsg string
 
-func runInstallSingle(image, host, dbEngine string, env map[string]string) tea.Cmd {
+func runInstallSingle(image, host string, aliases []state.Host, dbEngine string, env map[string]string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		_, err := installer.InstallSingle(ctx, installer.SingleSpec{
 			Image:    image,
 			Hostname: host,
+			Aliases:  aliases,
 			DBEngine: dbEngine,
 			Env:      env,
 		}, progressSend())
@@ -476,12 +533,13 @@ func runInstallSingle(image, host, dbEngine string, env map[string]string) tea.C
 	}
 }
 
-func runInstallGroup(host, dbEngine string, apps []installer.GroupApp) tea.Cmd {
+func runInstallGroup(host string, aliases []state.Host, dbEngine string, apps []installer.GroupApp) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		_, err := installer.InstallGroup(ctx, installer.GroupSpec{
 			Hostname: host,
+			Aliases:  aliases,
 			DBEngine: dbEngine,
 			Apps:     apps,
 		}, progressSend())

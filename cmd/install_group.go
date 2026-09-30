@@ -9,11 +9,13 @@ import (
 
 	"github.com/plainwork/boxx/engine/envfile"
 	"github.com/plainwork/boxx/engine/installer"
+	"github.com/plainwork/boxx/engine/state"
 	"github.com/spf13/cobra"
 )
 
 var (
-	groupHost    string
+	groupHosts     []string
+	groupRedirects []string
 	groupDB      string
 	groupSlug    string
 	groupApps    []string // each "<image>=<path>"
@@ -30,27 +32,31 @@ receives the same DATABASE_URL.
 
 Each --app is "<image>=<path>". Use "/" for the root path.
 
+The first --host is the primary hostname; repeat --host for more, and use
+--redirect-host for hostnames that should 308-redirect to the primary.
+
 Example:
   boxx install-group \
     --host nurun.example.com --db mysql \
     --app ghcr.io/acme/nurun-next:latest=/ \
     --app ghcr.io/acme/nurun-admin:latest=/admin`,
 	RunE: func(c *cobra.Command, args []string) error {
-			if groupHost == "" {
-				return fmt.Errorf("--host is required")
+			primary, aliases, err := hostsFromFlags(groupHosts, groupRedirects)
+			if err != nil {
+				return err
 			}
 			if len(groupApps) == 0 {
 				return fmt.Errorf("at least one --app is required")
 			}
 			spec := installer.GroupSpec{
-				Hostname: groupHost,
+				Hostname: primary,
+				Aliases:  aliases,
 				DBEngine: groupDB,
 				Slug:     groupSlug,
 			}
 			// parse env file once; applied to every app in the group
 			var sharedEnv map[string]string
 			if groupEnvFile != "" {
-				var err error
 				sharedEnv, err = envfile.ParseFile(groupEnvFile)
 				if err != nil {
 					return fmt.Errorf("--env-file: %w", err)
@@ -73,15 +79,20 @@ Example:
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
-			_, err := installer.InstallGroup(ctx, spec, func(step, msg string) {
+			g, err := installer.InstallGroup(ctx, spec, func(step, msg string) {
 				fmt.Fprintf(os.Stdout, "  [%-5s] %s\n", step, msg)
 			})
-			return err
+			if err != nil {
+				return err
+			}
+			printHostNotes(g.Slug, state.HostNames("", g.Aliases))
+			return nil
 		},
 }
 
 func init() {
-	installGroupCmd.Flags().StringVar(&groupHost, "host", "", "public hostname for the group (required)")
+	installGroupCmd.Flags().StringSliceVar(&groupHosts, "host", nil, "public hostname for the group (required; repeatable, first is primary)")
+	installGroupCmd.Flags().StringSliceVar(&groupRedirects, "redirect-host", nil, "hostname that redirects to the primary (repeatable)")
 	installGroupCmd.Flags().StringVar(&groupDB, "db", "", "shared database engine: mysql or postgres (optional)")
 	installGroupCmd.Flags().StringVar(&groupSlug, "slug", "", "override derived group slug (optional)")
 	installGroupCmd.Flags().StringArrayVar(&groupApps, "app", nil, "app to install: \"<image>=<path>\" (repeatable)")

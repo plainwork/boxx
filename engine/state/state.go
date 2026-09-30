@@ -83,11 +83,31 @@ type DB struct {
 	RootPassword  string `json:"root_password"`  // stored for admin ops (mysql root / postgres superuser)
 }
 
+// Host is an extra hostname an app answers to, in addition to its primary
+// Hostname. Name may be a single-label wildcard ("*.example.com").
+type Host struct {
+	Name     string `json:"name"`
+	Redirect bool   `json:"redirect,omitempty"` // 308 to the primary hostname instead of serving
+}
+
+// HostNames returns the primary hostname followed by every alias name.
+func HostNames(primary string, aliases []Host) []string {
+	out := make([]string, 0, 1+len(aliases))
+	if primary != "" {
+		out = append(out, primary)
+	}
+	for _, h := range aliases {
+		out = append(out, h.Name)
+	}
+	return out
+}
+
 // Single is an app installed on its own hostname with an optional dedicated DB.
 type Single struct {
 	Slug         string            `json:"slug"`
 	Image        string            `json:"image"`
-	Hostname     string            `json:"hostname"`
+	Hostname     string            `json:"hostname"`          // primary (canonical) hostname
+	Aliases      []Host            `json:"aliases,omitempty"` // extra hostnames
 	LiveColor    string            `json:"live_color"` // "blue" | "green"
 	DB           *DB               `json:"db,omitempty"`
 	Registry     string            `json:"registry,omitempty"`
@@ -99,7 +119,8 @@ type Single struct {
 // Group is a set of apps that share one hostname (and optionally one DB).
 type Group struct {
 	Slug     string                 `json:"slug"`
-	Hostname string                 `json:"hostname"`
+	Hostname string                 `json:"hostname"`          // primary (canonical) hostname
+	Aliases  []Host                 `json:"aliases,omitempty"` // extra hostnames
 	DB       *DB                    `json:"db,omitempty"`
 	Apps     map[string]GroupApp    `json:"apps"`
 }
