@@ -3,8 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -124,13 +124,16 @@ func runEnvPush(c *cobra.Command, args []string) error {
 	}
 
 	// strip boxx-managed keys — they're always injected at deploy time
-	stripManagedKeys(edited)
+	envfile.StripManaged(edited)
 
-	// backup current env before overwriting
-	backupEnv(s, slug, envCmdApp, "env push")
+	if maps.Equal(edited, existing) {
+		fmt.Fprintf(os.Stdout, "  [env  ] no changes for %s\n", label)
+		return nil
+	}
 
-	// save to state
-	if err := applyEnvToState(s, slug, envCmdApp, edited); err != nil {
+	// save to state, keeping the current env as the rollback
+	s.SetAppEnv(slug, envCmdApp, edited, "env push")
+	if err := state.Save(s); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "  [env  ] saved %d var(s) for %s\n", len(edited), label)
@@ -231,13 +234,13 @@ For a group app use --app:
 		if err != nil {
 			return fmt.Errorf("--file: %w", err)
 		}
-		stripManagedKeys(parsed)
-		backupEnv(s, slug, envCmdApp, "env import")
+		envfile.StripManaged(parsed)
 		_, label, err := resolveEnv(s, slug, envCmdApp)
 		if err != nil {
 			return err
 		}
-		if err := applyEnvToState(s, slug, envCmdApp, parsed); err != nil {
+		s.SetAppEnv(slug, envCmdApp, parsed, "env import")
+		if err := state.Save(s); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stdout, "  [env  ] imported %d var(s) for %s\n", len(parsed), label)
@@ -300,27 +303,16 @@ For a group app use --app:
 
 // openInEditor writes env to a temp file, opens $EDITOR, and returns the parsed result.
 func openInEditor(env map[string]string, label string) (map[string]string, error) {
-	tmp, err := os.CreateTemp("", "boxx-env-*.env")
+	path, err := envfile.WriteTemp(env, label)
 	if err != nil {
 		return nil, err
 	}
-	defer os.Remove(tmp.Name())
+	defer os.Remove(path)
 
-	fmt.Fprintf(tmp, "# boxx env — %s\n", label)
-	fmt.Fprintf(tmp, "# Edit values below, then save and close to apply.\n")
-	fmt.Fprintf(tmp, "# Lines starting with # are ignored. DATABASE_URL and BASE_PATH are managed by boxx.\n\n")
-	fmt.Fprint(tmp, envfile.Format(env))
-	tmp.Close()
-
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = os.Getenv("VISUAL")
+	cmd, err := envfile.EditCmd(path)
+	if err != nil {
+		return nil, err
 	}
-	if editor == "" {
-		editor = "nano"
-	}
-
-	cmd := exec.Command(editor, tmp.Name())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -328,7 +320,7 @@ func openInEditor(env map[string]string, label string) (map[string]string, error
 		return nil, fmt.Errorf("editor exited with error: %w", err)
 	}
 
-	return envfile.ParseFile(tmp.Name())
+	return envfile.ParseFile(path)
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -338,41 +330,6 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// managedKeys are always injected by boxx at deploy time and must not be stored
-// as user-supplied env — doing so would let stale values override boxx's values
-// on future deploys. Defined in config.go.
-
-func stripManagedKeys(env map[string]string) {
-	for k := range managedKeys {
-		delete(env, k)
-	}
-}
-
-// backupEnv stores a snapshot of the current env as PrevEnv before overwriting.
-func backupEnv(s *state.State, slug, appSlug, reason string) {
-	snap := func(m map[string]string) map[string]string {
-		cp := make(map[string]string, len(m))
-		for k, v := range m {
-			cp[k] = v
-		}
-		return cp
-	}
-	backup := &state.EnvBackup{BackupTime: time.Now().UTC(), Reason: reason}
-	if appSlug == "" {
-		app := s.Singles[slug]
-		backup.Env = snap(app.Env)
-		app.PrevEnv = backup
-		s.Singles[slug] = app
-	} else {
-		grp := s.Groups[slug]
-		app := grp.Apps[appSlug]
-		backup.Env = snap(app.Env)
-		app.PrevEnv = backup
-		grp.Apps[appSlug] = app
-		s.Groups[slug] = grp
-	}
 }
 
 // resolvePrevEnv returns the stored EnvBackup (nil if none) and a human label.

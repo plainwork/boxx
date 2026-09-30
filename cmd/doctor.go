@@ -11,6 +11,7 @@ import (
 	"github.com/plainwork/boxx/engine/bootstrap"
 	"github.com/plainwork/boxx/engine/caddy"
 	"github.com/plainwork/boxx/engine/dockerx"
+	"github.com/plainwork/boxx/engine/envfile"
 	"github.com/plainwork/boxx/engine/hostnames"
 	"github.com/plainwork/boxx/engine/state"
 	"github.com/spf13/cobra"
@@ -34,12 +35,27 @@ var doctorCmd = &cobra.Command{
 			printOK("Docker:       reachable (%s)", ver)
 		}
 
+		// boxx-proxy publishes 80 and 443, so while it runs they are in use by us.
+		proxyUp, _ := dockerx.ContainerRunning(ctx, caddy.ProxyContainer)
 		for _, p := range []int{80, 443} {
-			if bootstrap.PortFree(p) {
-				printOK("Port %d:      free", p)
-			} else {
-				printBad("Port %d:      in use", p)
+			label := fmt.Sprintf("Port %d:", p)
+			switch {
+			case bootstrap.PortFree(p):
+				printOK("%-14sfree", label)
+			case proxyUp:
+				printOK("%-14sserved by %s", label, caddy.ProxyContainer)
+			default:
+				printBad("%-14sin use by another program", label)
+				printf("              Run: sudo ss -ltnp 'sport = :%d'   to see which\n", p)
 			}
+		}
+
+		if argv, source, err := envfile.Editor(); err != nil {
+			printBad("Editor:       %v", err)
+		} else if source == "fallback" {
+			printOK("Editor:       %s ($EDITOR not set)", argv[0])
+		} else {
+			printOK("Editor:       %s (%s)", strings.Join(argv, " "), source)
 		}
 
 		if err := state.EnsureDirs(); err != nil {

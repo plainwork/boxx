@@ -12,11 +12,7 @@ import (
 )
 
 // managedKeys are auto-injected by boxx and must not be overridden via config.
-var managedKeys = map[string]bool{
-	"DATABASE_URL": true,
-	"BASE_PATH":    true,
-	"PORT":         true,
-}
+var managedKeys = envfile.Managed
 
 var configCmd = &cobra.Command{
 	Use:   "config",

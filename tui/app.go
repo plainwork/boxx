@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/plainwork/boxx/engine/dockerx"
+	"github.com/plainwork/boxx/engine/envfile"
 	"github.com/plainwork/boxx/engine/installer"
 	"github.com/plainwork/boxx/engine/metrics"
 	"github.com/plainwork/boxx/engine/release"
@@ -262,6 +264,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = applyOpResult(m, msg)
 		}
 		return m, nil
+
+	case envEditedMsg:
+		return m.applyEnvEdit(msg)
 
 	case loadingReadyMsg:
 		if m.pendingOp != nil {
@@ -555,9 +560,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "enter", " ":
 				switch m.appEnvConfigCursor {
-				case 0: // env push → launch external editor
+				case 0: // env push → open the env in the user's editor
 					m.screen = screenDashboard
-					m.setFlash("Use: boxx env push " + m.appActionSlug)
+					return m, editEnvCmd(m.appActionSlug)
 				case 1: // env import hint
 					m.screen = screenDashboard
 					m.setFlash("Use: boxx env import " + m.appActionSlug + " --file <path>")
@@ -892,6 +897,8 @@ func applyOpResult(m model, msg opResultMsg) model {
 	switch msg.op {
 	case "deploy":
 		m.setFlash(okStyle.Render("✓ deployed: ") + msg.slug)
+	case "env":
+		m.setFlash(okStyle.Render("✓ env saved and redeployed: ") + msg.slug)
 	case "install":
 		m.setFlash(okStyle.Render("✓ installed: ") + msg.slug)
 	case "restart":
@@ -989,6 +996,91 @@ func envRollbackCmd(slug string) tea.Cmd {
 		defer cancel()
 		err = installer.Deploy(ctx, installer.DeploySpec{Slug: fullSlug}, progressSend())
 		return opResultMsg{slug: fullSlug, op: "env-rollback", err: err}
+	}
+}
+
+// ---- env editing ───────────────────────────────────────────────────────────
+
+type envEditedMsg struct {
+	ref    string            // "slug" or "group/app"
+	path   string            // temp file the editor wrote to
+	before map[string]string // the env as it was when the editor opened
+	err    error
+}
+
+// editEnvCmd writes the app's env to a temp file and opens it in the user's
+// editor, handing it the terminal until the editor exits.
+func editEnvCmd(ref string) tea.Cmd {
+	fail := func(err error) tea.Cmd {
+		return func() tea.Msg { return envEditedMsg{ref: ref, err: err} }
+	}
+	s, err := state.Load()
+	if err != nil {
+		return fail(err)
+	}
+	slug, app := state.SplitRef(ref)
+	env, err := s.AppEnv(slug, app)
+	if err != nil {
+		return fail(err)
+	}
+	path, err := envfile.WriteTemp(env, ref)
+	if err != nil {
+		return fail(err)
+	}
+	cmd, err := envfile.EditCmd(path)
+	if err != nil {
+		os.Remove(path)
+		return fail(err)
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		if err != nil {
+			err = fmt.Errorf("editor exited with error: %w", err)
+		}
+		return envEditedMsg{ref: ref, path: path, before: env, err: err}
+	})
+}
+
+// applyEnvEdit saves the edited env and redeploys, or does nothing when the
+// editor was closed without changes.
+func (m model) applyEnvEdit(msg envEditedMsg) (tea.Model, tea.Cmd) {
+	if msg.path != "" {
+		defer os.Remove(msg.path)
+	}
+	fail := func(err error) (tea.Model, tea.Cmd) {
+		m.setFlash(badStyle.Render("env: ") + err.Error())
+		return m, nil
+	}
+	if msg.err != nil {
+		return fail(msg.err)
+	}
+	edited, err := envfile.ParseFile(msg.path)
+	if err != nil {
+		return fail(err)
+	}
+	envfile.StripManaged(edited)
+	if maps.Equal(edited, msg.before) {
+		m.setFlash("env unchanged: " + msg.ref)
+		return m, nil
+	}
+
+	s, err := state.Load()
+	if err != nil {
+		return fail(err)
+	}
+	slug, app := state.SplitRef(msg.ref)
+	s.SetAppEnv(slug, app, edited, "env push")
+	if err := state.Save(s); err != nil {
+		return fail(err)
+	}
+	return m, m.startOp("redeploying "+msg.ref+" with new env…", envDeployCmd(msg.ref))
+}
+
+func envDeployCmd(ref string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		err := installer.Deploy(ctx, installer.DeploySpec{Slug: ref}, progressSend())
+		return opResultMsg{slug: ref, op: "env", err: err}
 	}
 }
 
