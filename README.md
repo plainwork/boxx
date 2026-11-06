@@ -1,6 +1,7 @@
 # boxx
 
 A tiny TUI + CLI for installing and orchestrating dockerized apps on a single Linux host.
+[boxxup.com](https://boxxup.com)
 
 > **A personal project.** boxx works, and I run my own production sites on it, but it's
 > built for how I work, not as a supported product. It isn't meant for critical production
@@ -9,11 +10,20 @@ A tiny TUI + CLI for installing and orchestrating dockerized apps on a single Li
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plainwork/boxx/main/install.sh | sh
+curl https://get.boxxup.com | sh
 ```
 
-On Linux this will also install Docker (if missing), enable it as a systemd service so it
-starts on reboot, and add your user to the `docker` group. After the script finishes, run:
+get.boxxup.com serves [`install.sh`](install.sh) from this repo. On Linux it also installs
+Docker (if missing), enables it as a systemd service so it starts on reboot, and adds your
+user to the `docker` group. Env vars pin a release or skip Docker (`PREFIX` changes
+where boxx goes; see the top of `install.sh`):
+
+```sh
+curl https://get.boxxup.com | VERSION=v0.3.2 sh
+curl https://get.boxxup.com | SKIP_DOCKER=1 sh
+```
+
+After the script finishes, run:
 
 ```sh
 boxx install <image> --host <hostname>   # deploy your first app

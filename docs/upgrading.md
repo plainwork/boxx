@@ -13,8 +13,8 @@ proxy config using the new binary. `sudo` is needed when boxx lives in
 Alternatively, re-run the installer (optionally pinning a version):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/plainwork/boxx/main/install.sh | sh
-curl -fsSL https://raw.githubusercontent.com/plainwork/boxx/main/install.sh | VERSION=v0.5.0 sh
+curl https://get.boxxup.com | sh
+curl https://get.boxxup.com | VERSION=v0.5.0 sh
 ```
 
 The installer doesn't touch the proxy, so follow it with:

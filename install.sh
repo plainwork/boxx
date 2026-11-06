@@ -2,7 +2,10 @@
 # boxx installer — bootstraps Docker if needed, then installs the boxx binary.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/plainwork/boxx/main/install.sh | sh
+#   curl https://get.boxxup.com | sh
+#   curl https://get.boxxup.com | VERSION=v0.3.2 sh
+#
+# get.boxxup.com serves this file (the boxxup site copies it from main at each release).
 #
 # Options (env vars):
 #   PREFIX=<dir>      install boxx here (default: /usr/local/bin)
