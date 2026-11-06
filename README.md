@@ -2,6 +2,10 @@
 
 A tiny TUI + CLI for installing and orchestrating dockerized apps on a single Linux host.
 
+> **A personal project.** boxx works, and I run my own production sites on it, but it's
+> built for how I work, not as a supported product. It isn't meant for critical production
+> apps. If you use it, you're on your own: read the code, test it on your setup and keep backups.
+
 ## Install
 
 ```sh
