@@ -730,11 +730,6 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.newAppCursor = 0
 		m.screen = screenNewApp
-	case "m":
-		m.loadingFrame = 0
-		m.loadingLabel = "deploying stored…"
-		m.screen = screenLoading
-		return m, tickLoading()
 	case " ":
 		if m.inGroup {
 			m.inGroup = false
