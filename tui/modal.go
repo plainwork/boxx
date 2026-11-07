@@ -268,6 +268,7 @@ func renderAppImageModal(content string, ti textinput.Model, slug string, width,
 var newAppOptions = []newAppOption{
 	{"single", "Install a standalone application on one host"},
 	{"group", "Multiple apps on one host with path-based proxy"},
+	{"app in a group", "Add apps to a group that's already installed"},
 }
 
 // renderNewAppModal renders a centred modal for selecting new app type over the given content.

@@ -65,32 +65,8 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 		return nil, err
 	}
 
-	// Validate paths up-front and assign per-app slugs.
-	seen := map[string]bool{}
-	for i, a := range spec.Apps {
-		if a.Image == "" {
-			return nil, fmt.Errorf("apps[%d]: image is required", i)
-		}
-		if a.Path == "" {
-			return nil, fmt.Errorf("apps[%d]: path is required (use \"/\" for root)", i)
-		}
-		if !strings.HasPrefix(a.Path, "/") {
-			return nil, fmt.Errorf("apps[%d]: path must start with /", i)
-		}
-		if a.Slug == "" {
-			// Derive slug from path (e.g. "/admin" → "admin", "/" → image-derived).
-			pathSlug := strings.Trim(a.Path, "/")
-			if pathSlug == "" {
-				pathSlug = util.Slugify(a.Image)
-			} else {
-				pathSlug = util.Slugify(pathSlug)
-			}
-			spec.Apps[i].Slug = pathSlug
-		}
-		if seen[spec.Apps[i].Slug] {
-			return nil, fmt.Errorf("duplicate app slug %q in group", spec.Apps[i].Slug)
-		}
-		seen[spec.Apps[i].Slug] = true
+	if err := prepareGroupApps(spec.Apps, nil); err != nil {
+		return nil, err
 	}
 
 	// 1. proxy
@@ -109,37 +85,171 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 		}
 	}
 
-	// 3. pull all images first so we fail early on auth/registry issues.
-	for _, a := range spec.Apps {
+	// 3. pull all images first so we fail early on auth/registry issues,
+	// 4. then start each app blue and probe /up.
+	apps, rollback, err := startGroupApps(ctx, gslug, spec.Apps, dbRec, progress)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. persist + apply caddy
+	g := state.Group{
+		Slug:     gslug,
+		Hostname: spec.Hostname,
+		Aliases:  spec.Aliases,
+		DB:       dbRec,
+		Apps:     apps,
+	}
+	s.Groups[gslug] = g
+
+	progress("caddy", "applying group routes for "+spec.Hostname)
+	if err := caddy.Apply(ctx, s); err != nil {
+		rollback()
+		delete(s.Groups, gslug)
+		return nil, fmt.Errorf("caddy apply: %w", err)
+	}
+	if err := state.Save(s); err != nil {
+		return nil, err
+	}
+	progress("done", "installed group "+gslug+" → https://"+spec.Hostname)
+	return &g, nil
+}
+
+// AddGroupApps installs more apps into an existing group. The new apps share
+// the group's hostnames and database; the apps already running are untouched.
+func AddGroupApps(ctx context.Context, gslug string, add []GroupApp, progress Progress) (*state.Group, error) {
+	if progress == nil {
+		progress = noop
+	}
+	if len(add) == 0 {
+		return nil, errors.New("at least one app is required")
+	}
+	s, err := state.Load()
+	if err != nil {
+		return nil, err
+	}
+	g, ok := s.Groups[gslug]
+	if !ok {
+		return nil, fmt.Errorf("no group %q — run 'boxx ls' to list groups", gslug)
+	}
+	if err := prepareGroupApps(add, g.Apps); err != nil {
+		return nil, err
+	}
+
+	progress("proxy", "ensuring boxx-proxy is running")
+	if err := caddy.Ensure(ctx, s.Proxy.Image); err != nil {
+		return nil, fmt.Errorf("proxy: %w", err)
+	}
+
+	started, rollback, err := startGroupApps(ctx, gslug, add, g.DB, progress)
+	if err != nil {
+		return nil, err
+	}
+
+	apps := make(map[string]state.GroupApp, len(g.Apps)+len(started))
+	for k, v := range g.Apps {
+		apps[k] = v
+	}
+	for k, v := range started {
+		apps[k] = v
+	}
+	prev := g
+	g.Apps = apps
+	s.Groups[gslug] = g
+
+	progress("caddy", "applying group routes for "+g.Hostname)
+	if err := caddy.Apply(ctx, s); err != nil {
+		rollback()
+		s.Groups[gslug] = prev
+		return nil, fmt.Errorf("caddy apply: %w", err)
+	}
+	if err := state.Save(s); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(add))
+	for _, a := range add {
+		names = append(names, a.Slug+" at "+a.Path)
+	}
+	progress("done", "added "+strings.Join(names, ", ")+" to group "+gslug)
+	return &g, nil
+}
+
+// routePath is the prefix Caddy matches for a group app: "" for the root.
+func routePath(p string) string { return strings.TrimRight(p, "/") }
+
+// prepareGroupApps validates new group apps and fills in their slugs. existing
+// holds the apps already in the group; a new app may not reuse their slugs or paths.
+func prepareGroupApps(apps []GroupApp, existing map[string]state.GroupApp) error {
+	slugs := map[string]bool{}
+	paths := map[string]string{} // route path → slug
+	for slug, a := range existing {
+		slugs[slug] = true
+		paths[routePath(a.Path)] = slug
+	}
+	for i, a := range apps {
+		if a.Image == "" {
+			return fmt.Errorf("apps[%d]: image is required", i)
+		}
+		if a.Path == "" {
+			return fmt.Errorf("apps[%d]: path is required (use \"/\" for root)", i)
+		}
+		if !strings.HasPrefix(a.Path, "/") {
+			return fmt.Errorf("apps[%d]: path must start with /", i)
+		}
+		if a.Slug == "" {
+			// Derive slug from path (e.g. "/admin" → "admin", "/" → image-derived).
+			pathSlug := strings.Trim(a.Path, "/")
+			if pathSlug == "" {
+				pathSlug = util.Slugify(a.Image)
+			} else {
+				pathSlug = util.Slugify(pathSlug)
+			}
+			apps[i].Slug = pathSlug
+		}
+		if slugs[apps[i].Slug] {
+			return fmt.Errorf("duplicate app slug %q in group", apps[i].Slug)
+		}
+		slugs[apps[i].Slug] = true
+		rp := routePath(a.Path)
+		if other, taken := paths[rp]; taken {
+			shown := rp
+			if shown == "" {
+				shown = "/"
+			}
+			return fmt.Errorf("path %s is already served by %q in this group", shown, other)
+		}
+		paths[rp] = apps[i].Slug
+	}
+	return nil
+}
+
+// startGroupApps pulls every image, then starts each app as its blue container
+// and waits for /up. On error it removes what it started. On success it returns
+// the apps' state and a rollback func for failures later in the caller.
+func startGroupApps(ctx context.Context, gslug string, add []GroupApp, dbRec *state.DB, progress Progress) (map[string]state.GroupApp, func(), error) {
+	// pull first so we fail early on auth/registry issues
+	for _, a := range add {
 		progress("pull", "docker pull "+a.Image)
 		if err := dockerx.Pull(ctx, a.Image); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	// 4. start each app blue and probe /up. Container name is unique per group:
-	//    boxx-app-<gslug>-<aslug>-blue
+	// Container name is unique per group: boxx-app-<gslug>-<aslug>-blue
 	apps := map[string]state.GroupApp{}
-	startedContainers := []string{}
+	started := []string{}
 	rollback := func() {
-		for _, n := range startedContainers {
+		for _, n := range started {
 			_ = dockerx.Rm(ctx, n)
 		}
 	}
-	for _, a := range spec.Apps {
+	for _, a := range add {
 		fullSlug := gslug + "-" + a.Slug
 		container := caddyContainerName(fullSlug, "blue")
+		// spec env (from --env-file) first, then auto-managed keys last so they always win.
 		env := []string{}
-		// spec env (from --env-file) first, then stored env from a prior attempt,
-		// then auto-managed keys last so they always win.
 		for k, v := range a.Env {
 			env = append(env, k+"="+v)
-		}
-		// stored env first; auto-managed keys appended after so they always win
-		if sa, ok := s.Groups[gslug]; ok {
-			for k, v := range sa.Apps[a.Slug].Env {
-				env = append(env, k+"="+v)
-			}
 		}
 		if dbRec != nil {
 			env = append(env, "DATABASE_URL="+db.URL(dbRec))
@@ -164,15 +274,15 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 			},
 		}); err != nil {
 			rollback()
-			return nil, err
+			return nil, nil, err
 		}
-		startedContainers = append(startedContainers, container)
+		started = append(started, container)
 
 		progress("up", "waiting for /up on "+a.Slug)
 		if err := waitForUp(ctx, container, 60*time.Second); err != nil {
 			logs, _ := dockerx.LogsTail(ctx, container, 50)
 			rollback()
-			return nil, fmt.Errorf("%s /up never returned 2xx: %w\n--- last logs ---\n%s", a.Slug, err, logs)
+			return nil, nil, fmt.Errorf("%s /up never returned 2xx: %w\n--- last logs ---\n%s", a.Slug, err, logs)
 		}
 
 		up := state.UpdatePolicy{Mode: state.UpdateModeNotify}
@@ -189,26 +299,5 @@ func InstallGroup(ctx context.Context, spec GroupSpec, progress Progress) (*stat
 			UpdatePolicy: up,
 		}
 	}
-
-	// 5. persist + apply caddy
-	g := state.Group{
-		Slug:     gslug,
-		Hostname: spec.Hostname,
-		Aliases:  spec.Aliases,
-		DB:       dbRec,
-		Apps:     apps,
-	}
-	s.Groups[gslug] = g
-
-	progress("caddy", "applying group routes for "+spec.Hostname)
-	if err := caddy.Apply(ctx, s); err != nil {
-		rollback()
-		delete(s.Groups, gslug)
-		return nil, fmt.Errorf("caddy apply: %w", err)
-	}
-	if err := state.Save(s); err != nil {
-		return nil, err
-	}
-	progress("done", "installed group "+gslug+" → https://"+spec.Hostname)
-	return &g, nil
+	return apps, rollback, nil
 }

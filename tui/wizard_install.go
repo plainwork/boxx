@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,12 +23,14 @@ type wizardKind int
 const (
 	kindSingle wizardKind = iota
 	kindGroup
+	kindGroupAdd // add apps to an installed group
 )
 
 // installWizard drives both single and group install flows.
 //
 // Steps for single: 1=image, 2=host, 3=db, 4=env-file, 5=confirm, running.
 // Steps for group : 1=host, 2=db,   3=apps, 4=env-file, 5=confirm, running.
+// Steps for add   : 1=group,         3=apps, 4=env-file, 5=confirm, running.
 type installWizard struct {
 	step int
 	kind wizardKind
@@ -43,6 +46,12 @@ type installWizard struct {
 	groupApps  []installer.GroupApp
 
 	dbIdx int
+
+	// kindGroupAdd: the installed groups to pick from, and the chosen one
+	addGroups   []state.Group
+	addIdx      int
+	addGroup    string
+	addExisting []state.GroupApp // apps already in the chosen group, by path
 
 	// parsed from the host input: first is primary, the rest serve too
 	primary string
@@ -88,6 +97,30 @@ func newInstallWizard(kind wizardKind) installWizard {
 	return w
 }
 
+// newGroupAddWizard starts the "app in a group" flow on the group named sel,
+// or on the first group when sel is empty.
+func newGroupAddWizard(sel string) installWizard {
+	w := newInstallWizard(kindGroupAdd)
+	s, err := state.Load()
+	if err != nil {
+		w.hostErr = err.Error()
+		return w
+	}
+	for _, k := range sortedKeys(s.Groups) {
+		if k == sel {
+			w.addIdx = len(w.addGroups)
+		}
+		w.addGroups = append(w.addGroups, s.Groups[k])
+	}
+	return w
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	ks := keys(m)
+	sort.Strings(ks)
+	return ks
+}
+
 func (w installWizard) Update(msg tea.Msg) (installWizard, tea.Cmd) {
 	if w.running {
 		switch m := msg.(type) {
@@ -128,6 +161,21 @@ func (w installWizard) Update(msg tea.Msg) (installWizard, tea.Cmd) {
 	} else {
 		switch w.step {
 		case 1:
+			if w.kind == kindGroupAdd {
+				if k, ok := msg.(tea.KeyMsg); ok {
+					switch k.String() {
+					case "j", "down", "right", "l":
+						if w.addIdx < len(w.addGroups)-1 {
+							w.addIdx++
+						}
+					case "k", "up", "left", "h":
+						if w.addIdx > 0 {
+							w.addIdx--
+						}
+					}
+				}
+				return w, nil
+			}
 			var cmd tea.Cmd
 			w.host, cmd = w.host.Update(msg)
 			return w, cmd
@@ -246,6 +294,21 @@ func (w installWizard) advance() (installWizard, tea.Cmd) {
 	} else {
 		switch w.step {
 		case 1:
+			if w.kind == kindGroupAdd {
+				if len(w.addGroups) == 0 {
+					return w, nil
+				}
+				g := w.addGroups[w.addIdx]
+				w.addGroup, w.primary, w.aliases = g.Slug, g.Hostname, g.Aliases
+				w.addExisting = w.addExisting[:0]
+				for _, k := range sortedKeys(g.Apps) {
+					w.addExisting = append(w.addExisting, g.Apps[k])
+				}
+				sort.SliceStable(w.addExisting, func(i, j int) bool { return w.addExisting[i].Path < w.addExisting[j].Path })
+				w.step = 3
+				w.groupImage.Focus()
+				return w, textinput.Blink
+			}
 			nw, ok := w.checkHosts()
 			if !ok {
 				return nw, nil
@@ -290,6 +353,9 @@ func (w installWizard) advance() (installWizard, tea.Cmd) {
 			apps := make([]installer.GroupApp, len(w.groupApps))
 			for i, a := range w.groupApps {
 				apps[i] = installer.GroupApp{Image: a.Image, Path: a.Path, Env: w.envVars}
+			}
+			if w.kind == kindGroupAdd {
+				return w, runAddGroupApps(w.addGroup, apps)
 			}
 			return w, runInstallGroup(w.primary, w.aliases, db, apps)
 		}
@@ -354,7 +420,7 @@ func (w installWizard) View(width int) string {
 		width = 50
 	}
 	header := titleStyle.Render(" INSTALL WIZARD ") + " " +
-		mutedStyle.Render(map[wizardKind]string{kindSingle: "single app", kindGroup: "group"}[w.kind])
+		mutedStyle.Render(map[wizardKind]string{kindSingle: "single app", kindGroup: "group", kindGroupAdd: "app in a group"}[w.kind])
 
 	var body string
 	switch {
@@ -365,6 +431,9 @@ func (w installWizard) View(width int) string {
 	case w.done && w.err != nil:
 		body = badStyle.Render("✗ failed") + "\n\n" +
 			bodyStyle.Render(w.err.Error()) + "\n\n" +
+			footerStyle.Render("press esc to close")
+	case w.done && w.kind == kindGroupAdd:
+		body = okStyle.Render("✓ added to "+w.addGroup) + "\n\n" +
 			footerStyle.Render("press esc to close")
 	case w.done:
 		body = okStyle.Render("✓ installed") + "\n\n" +
@@ -405,6 +474,27 @@ func (w installWizard) viewStep() string {
 				btnStyle.Render(" Install ") + "\n\n" +
 				hint("[enter] install   [esc] cancel")
 		}
+	} else if w.kind == kindGroupAdd {
+		switch w.step {
+		case 1:
+			return w.viewGroupPick()
+		case 3:
+			return w.viewGroupApps("Apps in "+w.addGroup, "[enter] next")
+		case 4:
+			return w.viewEnvFileStep()
+		case 5:
+			envLine := ""
+			if w.envVars != nil {
+				envLine = kv("env", fmt.Sprintf("%d var(s) from %s", len(w.envVars), w.envFile.Value()))
+			}
+			return labelStyle.Render("Confirm") + "\n\n" +
+				kv("group", w.addGroup) +
+				w.hostKV() +
+				envLine +
+				labelStyle.Render("add") + "\n" + w.groupAppRows(w.groupApps) + "\n" +
+				btnStyle.Render(" Add to group ") + "\n\n" +
+				hint("[enter] add   [esc] cancel")
+		}
 	} else {
 		switch w.step {
 		case 1:
@@ -414,21 +504,7 @@ func (w installWizard) viewStep() string {
 				dbPicker(w.dbIdx) + "\n\n" +
 				hint("[← →] choose   [enter] next   [esc] cancel")
 		case 3:
-			rows := ""
-			if len(w.groupApps) == 0 {
-				rows = mutedStyle.Render("  (no apps yet — fill image + path and press [ctrl+a])\n")
-			} else {
-				for i, a := range w.groupApps {
-					rows += fmt.Sprintf("  %d. %s  %s\n",
-						i+1, bodyStyle.Render(a.Path), mutedStyle.Render(a.Image))
-				}
-			}
-			return labelStyle.Render("Apps in this group") + "\n" + rows + "\n" +
-				labelStyle.Render("Image") + "\n" +
-				inputBox(w.groupImage, w.groupImage.Focused()) + "\n" +
-				labelStyle.Render("Path") + "\n" +
-				inputBox(w.groupPath, w.groupPath.Focused()) + "\n\n" +
-				hint("[tab] switch field   [ctrl+a] add app   [ctrl+d] remove last   [enter] next   [esc] cancel")
+			return w.viewGroupApps("Apps in this group", "[enter] next")
 		case 4:
 			return w.viewEnvFileStep()
 		case 5:
@@ -451,6 +527,55 @@ func (w installWizard) viewStep() string {
 		}
 	}
 	return ""
+}
+
+// viewGroupApps is the apps step of both group flows: the apps already in the
+// group (when adding), the ones queued so far, and the image + path inputs.
+func (w installWizard) viewGroupApps(label, next string) string {
+	existing := ""
+	for _, a := range w.addExisting {
+		existing += fmt.Sprintf("  · %s  %s\n", mutedStyle.Render(a.Path), mutedStyle.Render(a.Image))
+	}
+	rows := w.groupAppRows(w.groupApps)
+	if len(w.groupApps) == 0 {
+		rows = mutedStyle.Render("  (no apps yet — fill image + path and press [ctrl+a])\n")
+	}
+	return labelStyle.Render(label) + "\n" + existing + rows + "\n" +
+		labelStyle.Render("Image") + "\n" +
+		inputBox(w.groupImage, w.groupImage.Focused()) + "\n" +
+		labelStyle.Render("Path") + "\n" +
+		inputBox(w.groupPath, w.groupPath.Focused()) + "\n\n" +
+		hint("[tab] switch field   [ctrl+a] add app   [ctrl+d] remove last   "+next+"   [esc] cancel")
+}
+
+func (w installWizard) groupAppRows(apps []installer.GroupApp) string {
+	rows := ""
+	for i, a := range apps {
+		rows += fmt.Sprintf("  %d. %s  %s\n", i+1, bodyStyle.Render(a.Path), mutedStyle.Render(a.Image))
+	}
+	return rows
+}
+
+// viewGroupPick lists the installed groups for the "app in a group" flow.
+func (w installWizard) viewGroupPick() string {
+	if w.hostErr != "" {
+		return badStyle.Render("✗ "+w.hostErr) + "\n\n" + hint("[esc] close")
+	}
+	if len(w.addGroups) == 0 {
+		return mutedStyle.Render("No groups installed yet. Install one with \"group\" first.") + "\n\n" +
+			hint("[esc] close")
+	}
+	rows := ""
+	for i, g := range w.addGroups {
+		circle, name := "○", bodyStyle.Render(g.Slug)
+		if i == w.addIdx {
+			circle, name = "●", lipgloss.NewStyle().Bold(true).Foreground(colFg).Render(g.Slug)
+		}
+		rows += "  " + lipgloss.NewStyle().Foreground(colAccent).Render(circle) + " " + name + "  " +
+			mutedStyle.Render(fmt.Sprintf("%s · %d app(s)", g.Hostname, len(g.Apps))) + "\n"
+	}
+	return labelStyle.Render("Group") + "\n\n" + rows + "\n" +
+		hint("[↑ ↓] choose   [enter] next   [esc] cancel")
 }
 
 func (w installWizard) viewHostStep(label string) string {
@@ -530,6 +655,15 @@ func runInstallSingle(image, host string, aliases []state.Host, dbEngine string,
 			Env:      env,
 		}, progressSend())
 		return opResultMsg{slug: host, op: "install", err: err}
+	}
+}
+
+func runAddGroupApps(group string, apps []installer.GroupApp) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		_, err := installer.AddGroupApps(ctx, group, apps, progressSend())
+		return opResultMsg{slug: group, op: "install", err: err}
 	}
 }
 

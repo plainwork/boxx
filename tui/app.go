@@ -80,7 +80,7 @@ type model struct {
 	inGroup        bool
 	innerCursor    int
 	actionCursor   int    // cursor within the DB action modal
-	newAppCursor   int    // cursor within the new-app type modal (0=single, 1=group)
+	newAppCursor   int    // cursor within the new-app type modal (0=single, 1=group, 2=app in a group)
 	appActionCursor int              // cursor within the app action modal
 	appActionSlug   string           // slug of the app whose action modal is open
 	appActionImage  textinput.Model  // text input for change-image action
@@ -286,6 +286,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if newW.running && !wasRunning {
 			// wizard just fired its install command — hand off to the loading screen
 			label := "installing " + newW.primary + "…"
+			if newW.kind == kindGroupAdd {
+				label = "adding to " + newW.addGroup + "…"
+			}
 			return m, m.startOp(label, cmd)
 		}
 		if newW.done && !newW.running {
@@ -582,7 +585,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "escape", "esc":
 				m.screen = screenDashboard
 			case "j", "down":
-				if m.newAppCursor < 1 {
+				if m.newAppCursor < len(newAppOptions)-1 {
 					m.newAppCursor++
 				}
 			case "k", "up":
@@ -590,10 +593,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.newAppCursor--
 				}
 			case "enter", " ":
-				if m.newAppCursor == 0 {
+				switch m.newAppCursor {
+				case 0:
 					m.wizard = newInstallWizard(kindSingle)
-				} else {
+				case 1:
 					m.wizard = newInstallWizard(kindGroup)
+				default:
+					// start on the group selected in the dashboard, if any
+					sel := ""
+					if e := selectedEntry(m); e != nil && e.isGroup {
+						sel = e.groupSlug
+					}
+					m.wizard = newGroupAddWizard(sel)
 				}
 				m.screen = screenWizard
 			}

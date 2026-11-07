@@ -81,6 +81,31 @@ boxx host add <app> '*.example.com'
 - An exact hostname on another app (e.g. `api.example.com`) wins over the wildcard.
 - Needs Caddy v2.8+ in the proxy; `boxx doctor` checks this.
 
+## Groups
+
+A group puts several apps behind one hostname, each on its own path prefix:
+
+```sh
+boxx install-group --host example.com --db postgres \
+  --app ghcr.io/acme/site:latest=/ \
+  --app ghcr.io/acme/admin:latest=/admin
+
+# add apps to the group later (or "app in a group" under n in the TUI)
+boxx group add example-com --app ghcr.io/acme/docs:latest=/docs
+```
+
+- The longest prefix wins, so `/admin` is matched before `/`.
+- The proxy strips the prefix: the app at `/admin` sees `/` and serves its own
+  `GET /up`. boxx sets `BASE_PATH=/admin` so it can build its links.
+- `--db` gives the group one database; every app gets the same `DATABASE_URL`,
+  including apps added later. Each app has its own `/storage` volume.
+- The group slug comes from the hostname (`example.com` → `example-com`), an
+  app's slug from its path, or from its image for `/`.
+- `boxx group add` refuses a path or slug the group already has; the apps
+  already running aren't touched.
+- Hostname commands take the group slug. `deploy`, `logs` and `remove` take
+  `<group>/<app>`; `boxx remove <group>` removes every app and the database.
+
 ## Upgrading
 
 See [docs/upgrading.md](docs/upgrading.md).

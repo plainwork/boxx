@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/plainwork/boxx/engine/envfile"
@@ -39,7 +38,9 @@ Example:
   boxx install-group \
     --host nurun.example.com --db mysql \
     --app ghcr.io/acme/nurun-next:latest=/ \
-    --app ghcr.io/acme/nurun-admin:latest=/admin`,
+    --app ghcr.io/acme/nurun-admin:latest=/admin
+
+To add apps to the group later, use 'boxx group add'.`,
 	RunE: func(c *cobra.Command, args []string) error {
 			primary, aliases, err := hostsFromFlags(groupHosts, groupRedirects)
 			if err != nil {
@@ -65,16 +66,9 @@ Example:
 					delete(sharedEnv, k)
 				}
 			}
-			for _, raw := range groupApps {
-				i := strings.LastIndex(raw, "=")
-				if i < 0 {
-					return fmt.Errorf("--app must be \"<image>=<path>\": got %q", raw)
-				}
-				spec.Apps = append(spec.Apps, installer.GroupApp{
-					Image: raw[:i],
-					Path:  raw[i+1:],
-					Env:   sharedEnv,
-				})
+			spec.Apps, err = parseGroupApps(groupApps, sharedEnv)
+			if err != nil {
+				return err
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
